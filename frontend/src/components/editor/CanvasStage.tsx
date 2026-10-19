@@ -20,7 +20,7 @@ import { useSelectStroke } from '@/hooks/useSelectStroke'
 import { useCanvasImage } from '@/hooks/useCanvasImage'
 import { useElementSize } from '@/hooks/useElementSize'
 import { makeAdjustFilter, toAdjustPreview, type AdjustPreview } from '@/lib/adjustPreview'
-import { useCanvasView } from '@/stores/canvasView'
+import { ZOOM_STEP, useCanvasView } from '@/stores/canvasView'
 import { useEditorUi, type CanvasSelection, type CropRect, type LayerPreview } from '@/stores/editorUi'
 
 const NO_FILTERS: ((imageData: ImageData) => void)[] = []
@@ -55,6 +55,7 @@ export default function CanvasStage({
   const y = useCanvasView((state) => state.y)
   const setViewport = useCanvasView((state) => state.setViewport)
   const fit = useCanvasView((state) => state.fit)
+  const stepZoom = useCanvasView((state) => state.stepZoom)
   const zoomByWheel = useCanvasView((state) => state.zoomByWheel)
   const panBy = useCanvasView((state) => state.panBy)
   const pan = useCanvasView((state) => state.pan)
@@ -161,7 +162,7 @@ export default function CanvasStage({
   return (
     <div
       ref={containerRef}
-      className={`bg-canvas relative h-full w-full overflow-hidden ${
+      className={`bg-canvas bg-canvas-dots relative h-full w-full overflow-hidden ${
         selecting || cropOpen ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'
       }`}
     >
@@ -305,6 +306,44 @@ export default function CanvasStage({
           }}
         />
       )}
+
+      {/* 左下角画布尺寸角标 (复现 creative-v1 方案 A 规范) */}
+      <div className="border-line bg-paper/90 rounded-sm shadow-xs text-muted absolute bottom-3.5 left-4 z-10 select-none border px-2.5 py-1 text-[11px] backdrop-blur-sm pointer-events-none">
+        <span className="font-mono">{canvas.width} × {canvas.height}</span>
+        <span className="text-muted-light ml-1.5 font-sans">画布</span>
+      </div>
+
+      {/* 右下角悬浮缩放控制胶囊 (复现 creative-v1 方案 A · zoom-control) */}
+      <div className="border-line bg-paper/95 rounded-control shadow-control text-ink absolute right-4 bottom-3.5 z-10 flex items-center select-none border px-1.5 py-0.5 text-xs backdrop-blur-md">
+        <button
+          type="button"
+          onClick={() => stepZoom(1 / ZOOM_STEP)}
+          className="text-muted hover:text-ink hover:bg-soft grid size-6 place-items-center rounded transition-colors"
+          title="缩小 -"
+        >
+          －
+        </button>
+        <span className="px-2 font-mono text-xs font-semibold tabular-nums text-center min-w-[42px]">
+          {Math.round(scale * 100)}%
+        </span>
+        <button
+          type="button"
+          onClick={() => stepZoom(ZOOM_STEP)}
+          className="text-muted hover:text-ink hover:bg-soft grid size-6 place-items-center rounded transition-colors"
+          title="放大 +"
+        >
+          ＋
+        </button>
+        <div className="bg-line mx-1.5 h-3.5 w-px" aria-hidden />
+        <button
+          type="button"
+          onClick={() => fit(canvas)}
+          className="text-brand hover:bg-brand-soft rounded px-2 py-0.5 text-xs font-semibold transition-colors"
+          title="适应窗口 (快捷键 0)"
+        >
+          适应
+        </button>
+      </div>
     </div>
   )
 }

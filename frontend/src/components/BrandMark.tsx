@@ -1,11 +1,11 @@
 import type { ReactNode } from 'react'
 
 const GLYPH_SIZE = {
-  sm: 'size-6 rounded-[7px]',
-  md: 'size-8 rounded-[10px]',
+  sm: 'size-8 rounded-[10px]',
+  md: 'size-9 rounded-[11px]',
 } as const
 
-/** 品牌标识：ink 底 + accent 图层符号，落地页、登录页与工作台共用一处。 */
+/** 品牌标识：复用 creative-v1 原创几何电光蓝徽章与精致字标。 */
 export default function BrandMark({
   size = 'md',
   className = '',
@@ -17,22 +17,19 @@ export default function BrandMark({
 }) {
   return (
     <span className={`inline-flex items-center gap-2.5 ${className}`}>
-      <span
-        className={`bg-ink text-accent grid shrink-0 place-items-center ${GLYPH_SIZE[size]}`}
-        aria-hidden
-      >
-        <svg viewBox="0 0 24 24" fill="none" className="size-[62%]">
-          <rect x="3.5" y="3.5" width="12" height="12" rx="3.5" stroke="currentColor" strokeWidth="2" />
-          <path
-            d="M8.5 20.5H17a3.5 3.5 0 0 0 3.5-3.5V8.5"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-          />
-          <circle cx="15.5" cy="3.5" r="1.55" fill="currentColor" />
-        </svg>
-      </span>
-      {children}
+      <img
+        src="/creative/mark.svg"
+        alt="智绘台 VisionDesk"
+        className={`shrink-0 shadow-sm ${GLYPH_SIZE[size]}`}
+      />
+      {children ?? (
+        <span className="leading-tight">
+          <span className="text-ink block text-[15px] font-bold tracking-tight">智绘台</span>
+          <span className="text-muted block text-[9.5px] font-semibold tracking-[1.4px]">
+            VISIONDESK
+          </span>
+        </span>
+      )}
     </span>
   )
 }

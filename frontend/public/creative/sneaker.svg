@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="900" viewBox="0 0 800 900">
+<defs><linearGradient id="bg" x2=".8" y2="1"><stop stop-color="#d4d0f2"/><stop offset="1" stop-color="#b4b3e6"/></linearGradient><linearGradient id="shoe" x2="0" y2="1"><stop stop-color="#fffef8"/><stop offset="1" stop-color="#deded4"/></linearGradient><filter id="s"><feDropShadow dx="7" dy="30" stdDeviation="19" flood-color="#59538a" flood-opacity=".23"/></filter></defs>
+<path fill="url(#bg)" d="M0 0h800v900H0z"/><circle cx="710" cy="210" r="290" fill="#e7e4fb" opacity=".55"/><circle cx="80" cy="850" r="250" fill="#918dce" opacity=".2"/>
+<text x="55" y="80" font-family="sans-serif" font-size="22" font-weight="bold" letter-spacing="5" fill="#393567">FORM / 02</text><text x="57" y="180" font-family="sans-serif" font-size="76" font-weight="900" letter-spacing="-4" fill="#fff">MOVE</text><text x="57" y="255" font-family="sans-serif" font-size="76" font-weight="900" letter-spacing="-4" fill="#fff">YOUR WAY.</text>
+<g transform="translate(40 290) rotate(-16 360 200)" filter="url(#s)">
+<path d="M61 252 91 152q13-38 61-19l90 32 43-99q17-32 52-7l83 88q49 51 129 59l95 31q39 14 35 61l-37 32H109q-55 0-48-78" fill="url(#shoe)" stroke="#d1d0cb" stroke-width="2"/>
+<path d="M92 158q30-30 66-9l84 34 20-46 57 22-48 112-145-11z" fill="#d4d3e4"/>
+<path d="m285 78 55 26 79 69-28 23-124-60z" fill="#f5f3ed"/>
+<path d="m118 267 35-65 121 62 111-77 92 43-176 68z" fill="#758d70"/>
+<path d="m351 171 75 34-20 19-74-35m-7 14 70 34-21 20-72-34m-5-64 65 31m-76-5 64 30" stroke="#fcfbf5" stroke-width="9" stroke-linecap="round"/>
+<path d="M66 279q153 27 317 9t289-4l-8 45q-10 27-64 29H124q-58-3-58-43z" fill="#f9f5e8" stroke="#d8d3c7" stroke-width="2"/>
+<path d="M87 332h548" stroke="#c7c4b6" stroke-width="3"/><path d="M108 339v15m36-15v17m36-17v17m36-17v17m36-17v17m36-17v17m36-17v17m36-17v17m36-17v17m36-17v17m36-17v17m36-17v17m36-17v17m36-17v17" stroke="#d8d4c8" stroke-width="3"/>
+<path d="M490 241q38-20 77-1" fill="none" stroke="#bbbcae" stroke-width="3"/>
+<g fill="#aaa8b6"><circle cx="524" cy="256" r="2"/><circle cx="537" cy="259" r="2"/><circle cx="551" cy="261" r="2"/><circle cx="565" cy="264" r="2"/></g>
+</g><path d="M59 759h682" stroke="#77719d" stroke-opacity=".4"/><text x="60" y="808" font-family="sans-serif" font-size="13" letter-spacing="3" fill="#47436a">EVERYDAY COMFORT.</text><text x="60" y="835" font-family="sans-serif" font-size="13" letter-spacing="3" fill="#47436a">EXTRAORDINARY YOU.</text><circle cx="704" cy="809" r="30" fill="#3e3a68"/><path d="m691 809 26 0-10-10m10 10-10 10" fill="none" stroke="#fff" stroke-width="2"/>
+</svg>

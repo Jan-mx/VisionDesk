@@ -2,22 +2,29 @@ import { useState } from 'react'
 import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 
 import BrandMark from '@/components/BrandMark'
+import LandingHeader from '@/components/landing/LandingHeader'
 import { errorMessage, useAuthActions, useCurrentUser } from '@/hooks/useAuth'
 
 type Mode = 'login' | 'register'
 type Rules = { minLength?: number; maxLength?: number; pattern?: string; title?: string }
 
-const COPY: Record<Mode, { title: string; submit: string; switchTo: Mode; switchHint: string }> = {
-  login: { title: '登录', submit: '登录', switchTo: 'register', switchHint: '还没有账号？注册' },
+const COPY: Record<Mode, { title: string; submit: string; switchTo: Mode; switchHint: string; sub: string }> = {
+  login: {
+    title: '欢迎回来。',
+    submit: '登录，继续创作',
+    switchTo: 'register',
+    switchHint: '还没有账号？创建账号',
+    sub: '登录智绘台，继续你的下一个好想法。',
+  },
   register: {
-    title: '创建账号',
-    submit: '注册并进入',
+    title: '开启你的创作之旅',
+    submit: '注册并开始创作',
     switchTo: 'login',
-    switchHint: '已有账号？登录',
+    switchHint: '已有账号？去登录',
+    sub: '创建账号，把每一个好想法变成作品。',
   },
 }
 
-// 与后端 Credentials 一致，注册时先在浏览器拦下，不用等一次请求。登录不限长度，老账号也进得来。
 const RULES: Record<Mode, { username: Rules; password: Rules }> = {
   login: { username: {}, password: {} },
   register: {
@@ -31,6 +38,7 @@ const RULES: Record<Mode, { username: Rules; password: Rules }> = {
   },
 }
 
+/** 认证登录/注册页（复现 creative-v1 方案 A · 1080px 双栏现代卡片） */
 export default function AuthPage() {
   const [params, setParams] = useSearchParams()
   const mode: Mode = params.get('mode') === 'register' ? 'register' : 'login'
@@ -57,60 +65,112 @@ export default function AuthPage() {
   }
 
   return (
-    <div className="relative isolate flex min-h-screen items-center justify-center px-6 py-12">
-      <div className="bg-glow absolute inset-x-0 top-0 h-[420px]" aria-hidden />
+    <div className="flex min-h-screen flex-col bg-canvas">
+      <LandingHeader account={null} />
 
-      <div className="relative w-full max-w-sm">
-        <Link to="/" className="text-muted hover:text-ink mb-6 inline-flex items-center gap-2 text-sm">
-          <span aria-hidden>←</span> 返回首页
-        </Link>
+      <main className="flex flex-1 items-center justify-center px-4 py-8 sm:px-6">
+        <div className="border-line bg-paper shadow-card grid w-full max-w-[1080px] min-h-[640px] grid-cols-1 overflow-hidden rounded-panel border lg:grid-cols-[1.1fr_1fr]">
+          {/* 左侧艺术展示栏（浅薰衣草艺术展台 + 倾斜商品卡） */}
+          <div className="relative isolate hidden flex-col justify-between overflow-hidden bg-gradient-to-br from-[#eeeaff] to-[#f6f3ff] p-10 lg:flex">
+            <div>
+              <span className="eyebrow text-[#8c82b4]">A LITTLE IDEA. A LOT OF POSSIBILITIES.</span>
+              <h1 className="text-ink mt-4 text-[34px] font-extrabold tracking-tight leading-[1.3]">
+                好创意，<br />
+                从<span className="text-brand">这里</span>开始。
+              </h1>
+              <p className="mt-3 text-xs leading-relaxed text-[#7b7396]">
+                让灵感落地，让商品发光。<br />
+                属于你的 AI 创意工作室。
+              </p>
+            </div>
 
-        <div className="border-line bg-paper rounded-panel shadow-panel border p-8">
-          <BrandMark size="sm">
-            <span className="text-ink text-sm font-semibold">智绘台</span>
-          </BrandMark>
+            {/* 错位倾斜拍立得海报卡片 */}
+            <div className="relative mt-8 h-[300px] w-full">
+              <div
+                className="shadow-lift pointer-events-none absolute bottom-4 left-6 h-[260px] w-[190px] -rotate-[10deg] overflow-hidden rounded-[12px] border-8 border-white"
+                aria-hidden
+              >
+                <img src="/creative/serum.svg" alt="" className="h-full w-full object-cover" />
+              </div>
+              <div
+                className="shadow-lift pointer-events-none absolute bottom-12 left-48 h-[250px] w-[180px] rotate-[11deg] overflow-hidden rounded-[12px] border-8 border-white"
+                aria-hidden
+              >
+                <img src="/creative/tote.svg" alt="" className="h-full w-full object-cover" />
+              </div>
 
-          <h1 className="text-ink mt-6 text-2xl font-semibold tracking-tight">{copy.title}</h1>
+              <span className="pointer-events-none absolute right-8 top-4 text-4xl text-[#d4a0cb] select-none" aria-hidden>
+                ✳
+              </span>
+              <span className="shadow-xs pointer-events-none absolute right-6 bottom-4 rounded-full bg-[#def1ba] px-4 py-2 text-xs font-semibold text-[#557224] -rotate-[7deg]">
+                Made with a little imagination.
+              </span>
+            </div>
+          </div>
 
-          <form onSubmit={submit} className="mt-6 space-y-4">
-            <Field
-              label="用户名"
-              value={username}
-              onChange={setUsername}
-              autoComplete="username"
-              placeholder="3–32 位字母、数字或下划线"
-              rules={RULES[mode].username}
-            />
-            <Field
-              label="密码"
-              type="password"
-              value={password}
-              onChange={setPassword}
-              autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-              placeholder="至少 6 位"
-              rules={RULES[mode].password}
-            />
+          {/* 右侧真实表单栏 */}
+          <div className="flex flex-col justify-center px-8 py-12 sm:px-14">
+            <Link to="/" className="mb-6 inline-block">
+              <BrandMark size="sm" />
+            </Link>
 
-            {action.isError && <p className="text-danger text-sm">{errorMessage(action.error)}</p>}
+            <h2 className="text-ink text-[26px] font-bold tracking-tight">{copy.title}</h2>
+            <p className="text-muted mt-2 text-xs">{copy.sub}</p>
 
-            <button
-              type="submit"
-              disabled={action.isPending}
-              className="bg-ink hover:bg-dark rounded-control w-full py-2.5 text-sm font-medium text-white transition-colors disabled:opacity-50"
-            >
-              {action.isPending ? '处理中…' : copy.submit}
-            </button>
-          </form>
+            <form onSubmit={submit} className="mt-8 space-y-4">
+              <Field
+                label="用户名"
+                value={username}
+                onChange={setUsername}
+                autoComplete="username"
+                placeholder={mode === 'register' ? '3–32 位字母、数字或下划线' : '输入你的用户名'}
+                rules={RULES[mode].username}
+              />
+              <Field
+                label="密码"
+                type="password"
+                value={password}
+                onChange={setPassword}
+                autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                placeholder={mode === 'register' ? '设置至少 6 位密码' : '输入你的密码'}
+                rules={RULES[mode].password}
+              />
 
-          <button
-            type="button"
-            onClick={switchMode}
-            className="text-muted hover:text-brand-strong mt-5 text-sm transition-colors"
-          >
-            {copy.switchHint}
-          </button>
+              {action.isError && (
+                <div className="rounded-control bg-danger/10 border-danger/20 border px-3 py-2 text-xs text-danger">
+                  {errorMessage(action.error)}
+                </div>
+              )}
+
+              <button
+                type="submit"
+                disabled={action.isPending}
+                className="bg-brand hover:bg-brand-strong rounded-control shadow-sm flex w-full items-center justify-center gap-2 py-3 text-sm font-semibold text-white transition-all disabled:opacity-50"
+              >
+                <span>{action.isPending ? '处理中…' : copy.submit}</span>
+                <svg viewBox="0 0 24 24" fill="none" className="size-4" aria-hidden>
+                  <path d="M5 12h14m-6-6 6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+            </form>
+
+            <div className="mt-6 text-center text-xs text-muted">
+              {copy.switchHint.split('？')[0]}？{' '}
+              <button
+                type="button"
+                onClick={switchMode}
+                className="text-brand hover:underline font-semibold"
+              >
+                {copy.switchHint.split('？')[1]}
+              </button>
+            </div>
+
+            <p className="text-muted-light mt-8 text-center text-[11px]">
+              安全加密登录 · 会话状态由系统持久化保护
+            </p>
+          </div>
         </div>
-      </div>
+      </main>
     </div>
   )
 }
@@ -133,8 +193,8 @@ function Field({
   rules?: Rules
 }) {
   return (
-    <label className="block">
-      <span className="text-muted mb-1.5 block text-sm">{label}</span>
+    <label className="block text-left">
+      <span className="text-muted mb-1.5 block text-xs font-semibold">{label}</span>
       <input
         type={type}
         value={value}
@@ -143,7 +203,7 @@ function Field({
         placeholder={placeholder}
         required
         {...rules}
-        className="border-line bg-paper text-ink placeholder:text-faint focus:border-brand rounded-control w-full border px-3.5 py-2.5 text-sm outline-none transition-colors"
+        className="border-line bg-paper text-ink placeholder:text-muted-light focus:border-brand/70 focus:ring-4 focus:ring-brand/10 rounded-control w-full border px-3.5 py-2.5 text-sm outline-none transition-all"
       />
     </label>
   )

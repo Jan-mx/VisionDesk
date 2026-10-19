@@ -5,27 +5,30 @@ import PromptComposer from './PromptComposer'
 const SCENARIOS = [
   {
     label: '商品主图',
-    prompt: '把这件商品放在纯白背景上，居中构图，柔和顶光，边缘干净，输出 1:1 主图。',
+    icon: 'M5 7h14l2 14H3L5 7ZM8 8V5a4 4 0 0 1 8 0v3',
+    prompt: '一瓶植萃精华，置于纯白背景上，居中构图，柔和顶光，高清质感，输出 1:1 主图。',
   },
   {
     label: '场景氛围图',
-    prompt: '把商品放到温暖的木质桌面场景，侧逆光、浅景深，保留商品原有材质与颜色。',
+    icon: 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8ZM12 1v3m0 16v3M1 12h3m16 0h3M4 4l2 2m12 12 2 2M4 20l2-2M18 6l2-2',
+    prompt: '把商品放到温暖的北欧木质桌面，侧逆光、浅景深，窗外透出晨光，保留商品原有材质与颜色。',
   },
   {
     label: '模特上身',
-    prompt: '生成模特手持该商品的半身展示图，简洁室内背景、自然光，商品细节清晰可辨。',
+    icon: 'M16 6a4 4 0 1 1-8 0 4 4 0 0 1 8 0ZM4 21v-2a8 8 0 0 1 16 0v2',
+    prompt: '生成模特双手捧着该商品的半身展示图，简洁室内背景、柔和自然光，突出商品细节。',
   },
   {
     label: '促销海报',
-    prompt: '做一张大促海报：主标题「新品首发」，副标题「限时 8 折」，突出商品，右侧留出文字区。',
+    icon: 'M5 3h14v18H5zM8 7h8M8 11h5m-5 4h8m-8 3h5',
+    prompt: '做一张大促海报：主标题「春季新品」，副标题「限时特惠」，商品在左下微倾，右侧留出排版文字区。',
   },
   {
     label: '多尺寸物料',
+    icon: 'M3 9V3h6m6 0h6v6M3 15v6h6m6 0h6v-6',
     prompt: '基于这张商品图输出一套投放物料，包含 1:1、4:5、9:16 三个尺寸，主体不被裁切。',
   },
 ]
-
-const FACTS = ['无需设计经验', '支持 JPG / PNG / WebP', '1:1 / 4:5 / 9:16 一次导出']
 
 export default function LandingHero({
   initialPrompt,
@@ -36,91 +39,104 @@ export default function LandingHero({
   submitLabel: string
   onStart: (prompt: string) => void
 }) {
-  const [prompt, setPrompt] = useState(initialPrompt)
+  const [prompt, setPrompt] = useState(
+    initialPrompt || '一瓶植萃精华，置于自然光下，鼠尾草绿背景，清新、有质感……'
+  )
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
-  const pick = (text: string) => {
-    setPrompt(text)
+  const pick = (scenario: typeof SCENARIOS[0]) => {
+    setPrompt(scenario.prompt)
     inputRef.current?.focus()
   }
 
   return (
-    <section className="relative isolate overflow-hidden">
-      <div className="bg-glow absolute inset-x-0 -top-24 h-[560px]" aria-hidden />
-      <div className="bg-grid absolute inset-x-0 -top-24 h-[560px]" aria-hidden />
+    <section className="relative isolate overflow-hidden pt-10 pb-8 text-center sm:pt-14 sm:pb-12">
+      {/* 顶部柔和环境光晕与淡点阵 */}
+      <div className="bg-glow absolute inset-x-0 -top-24 h-[600px] -z-10" aria-hidden />
 
-      {/* 容器给到 4xl，让 14 字标题在桌面端稳定单行；正文与输入框各自再收窄 */}
-      <div className="relative mx-auto max-w-4xl px-6 pt-16 pb-14 text-center sm:pt-24">
-        <p
-          className="border-line bg-paper/80 text-muted animate-rise inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-xs backdrop-blur"
-          style={{ animationDelay: '40ms' }}
-        >
-          <span className="bg-accent size-1.5 rounded-full" aria-hidden />
-          面向电商运营与内容创作者
-        </p>
-
-        <h1
-          className="text-ink animate-rise mt-6 text-[2rem] leading-[1.2] font-semibold tracking-tight text-balance sm:text-[2.7rem] lg:text-[3.25rem]"
-          style={{ animationDelay: '120ms' }}
-        >
-          一句话，交付
-          <span className="relative mx-1 whitespace-nowrap">
-            {/* CJK 字身占满字框，高亮块需覆盖整个字高才像马克笔而非删除线 */}
-            <span
-              className="bg-accent/55 absolute inset-x-[-7px] top-[14%] bottom-[8%] -skew-x-6 rounded-[3px]"
-              aria-hidden
-            />
-            <span className="relative">可上架</span>
+      <div className="relative mx-auto max-w-[1200px] px-6">
+        {/* Kicker 小胶囊 */}
+        <div className="bg-paper border-line text-ink-secondary shadow-xs inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-xs font-medium">
+          <span className="bg-lavender text-brand grid size-5 place-items-center rounded-md text-[11px]">
+            ✦
           </span>
-          的商品物料
-        </h1>
-
-        <p
-          className="text-muted animate-rise mx-auto mt-5 max-w-xl leading-relaxed"
-          style={{ animationDelay: '200ms' }}
-        >
-          描述需求即可从零生成，也可上传商品图继续编辑。抠图、换背景、局部精修、扩图、图层拆分与多尺寸导出，全部由智能体自动编排。
-        </p>
-
-        <div className="animate-rise mx-auto mt-9 max-w-3xl" style={{ animationDelay: '280ms' }}>
-          <PromptComposer
-            value={prompt}
-            onChange={setPrompt}
-            onSubmit={() => onStart(prompt)}
-            onAttach={() => onStart(prompt)}
-            submitLabel={submitLabel}
-            placeholder="描述你想要的商品图，例：把这双跑鞋放到清晨的城市街道，侧逆光，输出 1:1 主图与 9:16 竖版…"
-            inputRef={inputRef}
-          />
+          <span>给每一个有想法的你</span>
         </div>
 
-        <div
-          className="animate-rise mt-5 flex flex-wrap justify-center gap-2"
-          style={{ animationDelay: '360ms' }}
-        >
-          {SCENARIOS.map((scenario) => (
+        {/* 54px 大标题配蜜桃橙手绘微弧 */}
+        <h1 className="text-ink mt-5 text-[32px] font-extrabold tracking-[-1.5px] sm:text-[46px] lg:text-[54px] leading-[1.25]">
+          让好商品，
+          <span className="relative mx-1 inline-block whitespace-nowrap">
+            <span className="text-brand">自带吸引力。</span>
+            <span
+              className="bg-accent/70 absolute inset-x-0 -bottom-1 h-2 -z-10 -rotate-1 rounded-full"
+              aria-hidden
+            />
+          </span>
+        </h1>
+
+        <p className="text-muted mx-auto mt-4 max-w-xl text-[14.5px] leading-relaxed">
+          从一句灵感，到一整套商品物料。<br className="hidden sm:inline" />
+          你的创意，在这里自然发生。
+        </p>
+
+        {/* 核心中央输入卡与两侧拍立得倾斜卡片 */}
+        <div className="relative mx-auto mt-8 max-w-[1100px]">
+          {/* 左侧拍立得卡片 (植萃精华) */}
+          <div
+            className="pointer-events-none absolute -left-2 top-2 hidden w-[130px] -rotate-[10deg] overflow-hidden rounded-[12px] border-[7px] border-b-[24px] border-white shadow-lift lg:block"
+            aria-hidden
+          >
+            <img src="/creative/serum.svg" alt="" className="h-[150px] w-full object-cover" />
+          </div>
+          <span className="pointer-events-none absolute top-4 left-36 hidden text-[38px] text-[#e2a46a] lg:block select-none" aria-hidden>
+            ✳
+          </span>
+
+          {/* 740px 输入卡片 */}
+          <div className="relative z-10 mx-auto max-w-[740px]">
+            <PromptComposer
+              value={prompt}
+              onChange={setPrompt}
+              onSubmit={() => onStart(prompt)}
+              onAttach={() => onStart(prompt)}
+              submitLabel={submitLabel}
+              placeholder="描述你想要的画面，比如：一瓶植萃精华，置于自然光下，鼠尾草绿背景，清新、有质感……"
+              inputRef={inputRef}
+            />
+          </div>
+
+          {/* 右侧拍立得卡片 (轻盈跑鞋) */}
+          <div
+            className="pointer-events-none absolute -right-2 top-8 hidden w-[130px] rotate-[9deg] overflow-hidden rounded-[12px] border-[7px] border-b-[24px] border-white shadow-lift lg:block"
+            aria-hidden
+          >
+            <img src="/creative/sneaker.svg" alt="" className="h-[150px] w-full object-cover" />
+          </div>
+          <span className="pointer-events-none absolute top-28 right-36 hidden size-7 rounded-full border-4 border-[#a1d5bc] -rotate-12 lg:block" aria-hidden />
+        </div>
+
+        {/* 场景标签胶囊行 */}
+        <div className="mt-6 flex flex-wrap justify-center gap-2.5">
+          {SCENARIOS.map((item) => (
             <button
-              key={scenario.label}
+              key={item.label}
               type="button"
-              onClick={() => pick(scenario.prompt)}
-              className="border-line bg-paper/70 text-muted hover:border-brand hover:text-brand-strong rounded-full border px-3.5 py-1.5 text-xs transition-colors"
+              onClick={() => pick(item)}
+              className="border-line bg-paper text-ink hover:border-brand hover:text-brand hover:bg-brand-soft shadow-xs flex items-center gap-2 rounded-full border px-3.5 py-2 text-xs font-medium transition-all"
             >
-              {scenario.label}
+              <svg viewBox="0 0 24 24" fill="none" className="size-4 text-brand shrink-0" aria-hidden>
+                <path d={item.icon} stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <span>{item.label}</span>
             </button>
           ))}
         </div>
 
-        <ul
-          className="text-faint animate-rise mt-10 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-xs"
-          style={{ animationDelay: '440ms' }}
-        >
-          {FACTS.map((fact) => (
-            <li key={fact} className="flex items-center gap-1.5">
-              <span className="bg-line-strong size-1 rounded-full" aria-hidden />
-              {fact}
-            </li>
-          ))}
-        </ul>
+        {/* 底部轻微说明 */}
+        <p className="text-muted-light mt-5 text-xs">
+          无需设计经验 &nbsp; · &nbsp; 从商品主图到营销海报 &nbsp; · &nbsp; 创作与编辑，一站完成
+        </p>
       </div>
     </section>
   )

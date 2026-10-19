@@ -4,7 +4,6 @@ import { Link, NavLink } from 'react-router-dom'
 import AgentConversation from '@/components/editor/AgentConversation'
 import MessageComposer from '@/components/editor/MessageComposer'
 import Button from '@/components/ui/Button'
-import { buttonClass } from '@/components/ui/buttonStyles'
 import { useSendMessage, useTurns } from '@/hooks/useAgent'
 import { errorMessage } from '@/hooks/useAuth'
 import { useSessions } from '@/hooks/useSessions'
@@ -15,21 +14,28 @@ export default function SessionSidebar({ activeId }: { activeId: string }) {
   const [historyOpen, setHistoryOpen] = useState(false)
 
   return (
-    <aside className="border-line bg-paper flex w-72 shrink-0 flex-col border-r">
-      <div className="border-line flex items-center gap-2 border-b p-3">
-        <Link
-          to="/create"
-          className={`${buttonClass({ variant: 'outline' })} flex-1 py-2 text-center text-sm`}
-        >
-          新对话
-        </Link>
-        <Button
-          active={historyOpen}
-          className="px-3 py-2"
-          onClick={() => setHistoryOpen((open) => !open)}
-        >
-          历史
-        </Button>
+    <aside className="border-line bg-paper flex w-[284px] shrink-0 flex-col border-r">
+      <div className="border-line flex items-center justify-between border-b px-4 py-3">
+        <div className="flex items-center gap-2">
+          <span className="text-brand text-sm">✦</span>
+          <span className="text-ink text-[13px] font-bold">AI 创意搭档</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <Link
+            to="/create"
+            className="text-muted hover:text-brand hover:bg-soft rounded-control grid size-7 place-items-center text-xs font-semibold"
+            title="新建创作会话"
+          >
+            ＋
+          </Link>
+          <Button
+            active={historyOpen}
+            className="px-2 py-1 text-[11px]"
+            onClick={() => setHistoryOpen((open) => !open)}
+          >
+            历史
+          </Button>
+        </div>
       </div>
 
       {historyOpen && <SessionList activeId={activeId} />}

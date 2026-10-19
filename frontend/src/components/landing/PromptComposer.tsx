@@ -1,26 +1,45 @@
 import type { RefObject } from 'react'
 
-function AttachIcon() {
+function PlusIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" className="size-4" aria-hidden>
-      <rect x="3" y="4.5" width="18" height="15" rx="3" stroke="currentColor" strokeWidth="1.6" />
-      <path d="M3.5 16l4.6-4a2 2 0 0 1 2.6 0l5.3 4.6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-      <circle cx="15.5" cy="9.5" r="1.6" fill="currentColor" />
+      <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
     </svg>
   )
 }
 
-function SubmitIcon() {
+function SparkleIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" className="size-4" aria-hidden>
-      <path d="M5 12h13M13 6.5l5.5 5.5L13 17.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path
+        d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3ZM20 2v4m-2-2h4"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
+function ArrowIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="size-4" aria-hidden>
+      <path d="M5 12h14m-6-6 6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function ShieldIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" className="size-3.5 text-muted-light" aria-hidden>
+      <path d="m12 2 8 4v6q-1 7-8 10-7-3-8-10V6l8-4Zm-4 10 3 3 5-6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
     </svg>
   )
 }
 
 /**
- * 需求输入面板：受控组件，只负责采集与提交，不关心提交后去哪。
- * Enter 提交、Shift + Enter 换行，与主流对话式产品保持一致。
+ * 核心输入卡片（复现 creative-v1 方案 A · Composer）
  */
 export default function PromptComposer({
   value,
@@ -45,7 +64,7 @@ export default function PromptComposer({
         event.preventDefault()
         onSubmit()
       }}
-      className="border-line bg-paper shadow-panel rounded-panel focus-within:border-brand relative border p-2 text-left transition-colors"
+      className="border-line bg-paper shadow-card hover:shadow-hover rounded-card focus-within:border-brand/70 focus-within:ring-4 focus-within:ring-brand/10 relative border p-4.5 text-left transition-all"
     >
       <textarea
         ref={inputRef}
@@ -59,30 +78,38 @@ export default function PromptComposer({
           }
         }}
         placeholder={placeholder}
-        aria-label="描述你想要的商品物料"
-        className="text-ink placeholder:text-faint w-full resize-none bg-transparent px-4 pt-3 pb-1 text-[15px] leading-relaxed outline-none"
+        aria-label="描述你想要的画面"
+        className="text-ink placeholder:text-muted-light w-full resize-none bg-transparent px-1 pt-1 pb-2 text-[14.5px] leading-relaxed outline-none"
       />
 
-      <div className="flex items-center justify-between gap-3 px-2 pb-1">
-        <button
-          type="button"
-          onClick={onAttach}
-          className="text-muted hover:border-line-strong hover:text-ink border-line rounded-control flex items-center gap-1.5 border px-2.5 py-1.5 text-xs font-medium transition-colors"
-        >
-          <AttachIcon />
-          上传商品图
-        </button>
-
-        <div className="flex items-center gap-3">
-          <span className="text-faint hidden text-xs sm:block">Enter 发送 · Shift + Enter 换行</span>
+      <div className="border-line/60 flex flex-wrap items-center justify-between gap-3 border-t pt-3.5">
+        <div className="flex items-center gap-2">
           <button
-            type="submit"
-            className="bg-ink hover:bg-dark rounded-control flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-white transition-colors"
+            type="button"
+            onClick={onAttach}
+            className="border-line bg-paper text-ink hover:bg-soft hover:border-line-strong rounded-control shadow-control flex min-h-[36px] items-center gap-1.5 border px-3 py-1.5 text-xs font-semibold transition-colors"
           >
-            {submitLabel}
-            <SubmitIcon />
+            <PlusIcon />
+            上传商品图
           </button>
         </div>
+
+        <div className="flex items-center gap-3">
+          <span className="text-muted-light hidden text-xs sm:inline">Enter 发送 · Shift+Enter 换行</span>
+          <button
+            type="submit"
+            className="bg-brand hover:bg-brand-strong rounded-control flex min-h-[38px] items-center gap-2 px-4.5 py-2 text-sm font-semibold text-white shadow-xs transition-colors hover:shadow-md"
+          >
+            <SparkleIcon />
+            <span>{submitLabel}</span>
+            <ArrowIcon />
+          </button>
+        </div>
+      </div>
+
+      <div className="text-muted-light mt-2.5 flex items-center gap-1.5 px-1 text-[11px]">
+        <ShieldIcon />
+        <span>灵感交给你，剩下的交给 AI</span>
       </div>
     </form>
   )

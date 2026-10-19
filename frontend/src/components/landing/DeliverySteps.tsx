@@ -1,24 +1,38 @@
 const STEPS = [
-  { title: '描述需求', desc: '一句话说清商品、场景与尺寸。' },
-  { title: '挑选方向', desc: '从 4 个候选里选中最合适的一张。' },
-  { title: '局部精修', desc: '点选主体下指令，反复改到满意。' },
-  { title: '导出物料', desc: '按投放渠道一次导出全部尺寸。' },
+  {
+    num: '01',
+    title: '给一个想法',
+    desc: '描述画面，或上传你的商品图片。',
+  },
+  {
+    num: '02',
+    title: '让创意发生',
+    desc: '生成候选，用自然语言打磨每个细节。',
+  },
+  {
+    num: '03',
+    title: '把精彩带走',
+    desc: '适配多种投放尺寸，一次打包交付。',
+  },
 ]
 
+/** 创作三步指引（复现 creative-v1 方案 A · Steps） */
 export default function DeliverySteps() {
   return (
-    <section className="mx-auto max-w-5xl px-6 pb-16">
-      <ol className="border-line bg-paper rounded-card divide-line grid divide-y border sm:grid-cols-4 sm:divide-x sm:divide-y-0">
-        {STEPS.map((step, index) => (
-          <li key={step.title} className="p-6">
-            <span className="bg-brand-soft text-brand-strong grid size-7 place-items-center rounded-full text-xs font-semibold">
-              {index + 1}
+    <section className="border-line/70 mx-auto max-w-[1200px] border-t px-6 pt-12 pb-6">
+      <div className="grid grid-cols-1 gap-8 sm:grid-cols-3 sm:gap-10">
+        {STEPS.map((step) => (
+          <div key={step.num} className="flex items-start gap-4">
+            <span className="font-serif text-[34px] italic leading-none text-[#bbb7db] select-none">
+              {step.num}
             </span>
-            <h3 className="text-ink mt-4 text-sm font-medium">{step.title}</h3>
-            <p className="text-muted mt-1.5 text-sm leading-relaxed">{step.desc}</p>
-          </li>
+            <div>
+              <h3 className="text-ink text-[15px] font-bold">{step.title}</h3>
+              <p className="text-muted mt-1.5 text-xs leading-relaxed">{step.desc}</p>
+            </div>
+          </div>
         ))}
-      </ol>
+      </div>
     </section>
   )
 }

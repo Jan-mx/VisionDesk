@@ -2,35 +2,50 @@
 
 @theme {
   --font-sans:
-    system-ui, -apple-system, 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+    'Microsoft YaHei UI', 'Microsoft YaHei', 'PingFang SC', -apple-system, BlinkMacSystemFont,
+    'Segoe UI', system-ui, sans-serif;
+  --font-serif: Georgia, Cambria, 'Times New Roman', serif;
 
-  --color-ink: #171917;
-  --color-muted: #6f746f;
-  --color-faint: #9aa09a;
-  --color-line: #e5e8e4;
-  --color-line-strong: #d7dbd6;
+  --color-ink: #212335;
+  --color-muted: #6f7182;
+  --color-faint: #8d90a2;
+  --color-line: #e6e6ee;
+  --color-line-strong: #d5d5e2;
   --color-paper: #ffffff;
-  --color-canvas: #eff1ee;
-  --color-soft: #f6f7f5;
-  --color-dark: #1e211e;
+  --color-canvas: #faf9f6;
+  --color-soft: #f4f3f0;
+  --color-dark: #181926;
 
-  --color-brand: #5f98ad;
-  --color-brand-strong: #427f95;
-  --color-brand-soft: #e8f2f5;
-  --color-accent: #d9ff6e;
+  /* 核心电光蓝主色系 */
+  --color-brand: #3448ed;
+  --color-brand-strong: #2537c8;
+  --color-brand-soft: #eeefff;
 
-  --color-danger: #d95656;
+  /* 装饰与点缀 */
+  --color-accent: #ffca9b;
+
+  /* 创意马卡龙辅色及边框 */
+  --color-lavender: #eeebff;
+  --color-lavender-border: #ded8ff;
+  --color-mint: #e3f3e9;
+  --color-mint-border: #c8e7d2;
+  --color-peach: #ffeadb;
+  --color-peach-border: #ffd5b8;
+  --color-sky: #e5effb;
+  --color-sky-border: #cbe0f8;
+
+  --color-danger: #e25858;
   --color-success: #3b8a61;
 
-  --radius-chip: 8px;
-  --radius-card: 18px;
+  --radius-chip: 9999px;
+  --radius-card: 20px;
   --radius-control: 12px;
-  --radius-panel: 26px;
+  --radius-panel: 24px;
 
-  --shadow-card: 0 16px 42px rgb(25 31 26 / 0.09);
-  --shadow-control: 0 8px 22px rgb(27 31 27 / 0.08);
-  --shadow-lift: 0 20px 46px -18px rgb(20 26 20 / 0.18);
-  --shadow-panel: 0 28px 72px -26px rgb(20 26 20 / 0.3);
+  --shadow-card: 0 10px 30px rgba(40, 42, 65, 0.07);
+  --shadow-control: 0 2px 8px rgba(33, 35, 53, 0.04);
+  --shadow-lift: 0 16px 42px rgba(40, 42, 65, 0.11);
+  --shadow-panel: 0 20px 50px -12px rgba(33, 35, 53, 0.18);
 
   --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
 
@@ -109,17 +124,19 @@
 @layer base {
   html {
     -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
   body {
-    @apply bg-canvas text-ink font-sans antialiased;
+    @apply bg-canvas text-ink font-sans antialiased text-[13.5px];
   }
 
   :focus-visible {
-    @apply outline-brand outline-2 outline-offset-2;
+    outline: 2px solid var(--color-brand);
+    outline-offset: 3px;
   }
 
-  /* 滑杆是修图里最高频的控件，统一做成跟手的细轨道加浮起滑块 */
+  /* 滑杆统一质感 */
   input[type='range'] {
     @apply h-4 w-full cursor-pointer appearance-none bg-transparent;
   }
@@ -166,19 +183,19 @@
   }
 }
 
-/* 面板与侧栏的滚动条不占视觉重量 */
+/* 优雅滚动条 */
 @utility scrollbar-slim {
   scrollbar-width: thin;
   scrollbar-color: var(--color-line-strong) transparent;
 
   &::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
+    width: 6px;
+    height: 6px;
   }
 
   &::-webkit-scrollbar-thumb {
     background-color: var(--color-line-strong);
-    border: 2px solid transparent;
+    border: 1px solid transparent;
     border-radius: 999px;
     background-clip: content-box;
   }
@@ -188,18 +205,24 @@
   }
 }
 
-/* 首屏顶部的光晕，为居中的输入面板提供视觉重心 */
+/* 首屏顶部的轻柔环境光晕 */
 @utility bg-glow {
   background:
-    radial-gradient(62% 52% at 50% -6%, rgb(232 242 245 / 0.95), transparent 72%),
-    radial-gradient(34% 34% at 84% 6%, rgb(217 255 110 / 0.28), transparent 70%);
+    radial-gradient(60% 50% at 50% -5%, rgba(238, 235, 255, 0.95), transparent 70%),
+    radial-gradient(35% 35% at 85% 5%, rgba(255, 202, 155, 0.35), transparent 70%);
 }
 
-/* 网格底纹，向下淡出以免干扰正文 */
+/* 点阵网格底纹 */
 @utility bg-grid {
   background-image:
-    linear-gradient(to right, rgb(23 25 23 / 0.05) 1px, transparent 1px),
-    linear-gradient(to bottom, rgb(23 25 23 / 0.05) 1px, transparent 1px);
-  background-size: 56px 56px;
+    linear-gradient(to right, rgba(33, 35, 53, 0.04) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(33, 35, 53, 0.04) 1px, transparent 1px);
+  background-size: 48px 48px;
   mask-image: radial-gradient(68% 58% at 50% 0%, #000 10%, transparent 100%);
+}
+
+/* 画布专业点阵底纹 */
+@utility bg-canvas-dots {
+  background-image: radial-gradient(#d3d3df 0.8px, transparent 0.8px);
+  background-size: 16px 16px;
 }

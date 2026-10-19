@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="900" viewBox="0 0 800 900">
+<defs>
+ <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#f1ecd4"/><stop offset="1" stop-color="#ccd9b8"/></linearGradient>
+ <linearGradient id="plinth" x2="0" y2="1"><stop stop-color="#ecebd5"/><stop offset="1" stop-color="#b5bea2"/></linearGradient>
+ <linearGradient id="glass" x2="1"><stop stop-color="#644c25"/><stop offset=".18" stop-color="#ab8b4a"/><stop offset=".42" stop-color="#e8ce86"/><stop offset=".65" stop-color="#b08f47"/><stop offset="1" stop-color="#514a28"/></linearGradient>
+ <linearGradient id="cap" x2="1"><stop stop-color="#d5ccb4"/><stop offset=".3" stop-color="#faf5e9"/><stop offset=".72" stop-color="#e9e0c9"/><stop offset="1" stop-color="#b9b498"/></linearGradient>
+ <radialGradient id="light"><stop stop-color="#fffced" stop-opacity=".8"/><stop offset="1" stop-color="#fffced" stop-opacity="0"/></radialGradient>
+ <filter id="blur"><feGaussianBlur stdDeviation="18"/></filter>
+ <filter id="shadow" x="-50%" y="-30%" width="210%" height="180%"><feDropShadow dx="20" dy="22" stdDeviation="16" flood-color="#4b5430" flood-opacity=".22"/></filter>
+</defs>
+<path fill="url(#bg)" d="M0 0h800v900H0z"/>
+<ellipse cx="210" cy="200" rx="500" ry="500" fill="url(#light)"/>
+<g opacity=".2" fill="#647958" filter="url(#blur)"><path d="M650 0 800 120 800 340 510 40z"/><ellipse cx="730" cy="400" rx="50" ry="200" transform="rotate(-45 730 400)"/></g>
+<text x="58" y="82" font-family="Georgia,serif" font-size="27" letter-spacing="8" fill="#39472d">BOTANICA</text>
+<text x="61" y="112" font-family="sans-serif" font-size="10" letter-spacing="4" fill="#657057">THE DAILY RITUAL</text>
+<circle cx="696" cy="90" r="33" fill="none" stroke="#6c785b" stroke-opacity=".5"/><path d="M681 98c-3-21 12-28 25-29 2 17-4 31-25 29zm0 0 18-22" fill="none" stroke="#6c785b" stroke-width="1.5"/>
+<path d="M-80 725c110-105 289-123 440-56s300 23 500-9v240H-80" fill="url(#plinth)"/>
+<ellipse cx="396" cy="754" rx="192" ry="27" fill="#6f7650" opacity=".26" filter="url(#blur)"/>
+<g transform="translate(275 245) rotate(-8 120 240)" filter="url(#shadow)">
+ <rect x="24" y="126" width="214" height="374" rx="44" fill="url(#glass)"/>
+ <path d="M44 181v253q0 40 17 44" stroke="#fff9d2" stroke-width="7" opacity=".4" fill="none"/>
+ <rect x="43" y="84" width="176" height="62" rx="12" fill="url(#cap)"/>
+ <rect x="91" y="0" width="80" height="99" rx="34" fill="url(#cap)"/>
+ <path d="M99 76V36q0-25 20-25" stroke="#fff" opacity=".65" stroke-width="4" fill="none"/>
+ <rect x="23" y="244" width="216" height="188" rx="2" fill="#f8f4e6"/>
+ <text x="131" y="284" text-anchor="middle" font-family="Georgia,serif" font-size="21" letter-spacing="3" fill="#37432e">BOTANICA</text>
+ <path d="M114 312q4-24 28-24-1 25-28 24zm0 0 20-17" fill="none" stroke="#7c8e66" stroke-width="1.5"/>
+ <text x="131" y="344" text-anchor="middle" font-family="sans-serif" font-size="13" letter-spacing="3" fill="#39472d">DAILY GLOW</text>
+ <text x="131" y="366" text-anchor="middle" font-family="sans-serif" font-size="9" letter-spacing="2" fill="#6e765d">BOTANICAL FACE SERUM</text>
+ <path d="M102 386h57" stroke="#9eab89"/>
+ <text x="131" y="407" text-anchor="middle" font-family="sans-serif" font-size="9" letter-spacing="2" fill="#6e765d">30 ML / 1 FL.OZ.</text>
+</g>
+<g fill="#7c9366" opacity=".9"><path d="M90 850q80-121 84-304" fill="none" stroke="#658057" stroke-width="4"/><path d="M150 671q-90-1-111-85 89 2 111 85"/><path d="M165 623q-17-89 42-126 31 80-42 126"/><path d="M124 742q-78 15-107-47 80-27 107 47"/><path d="M144 699q27-91 91-77-13 77-91 77"/></g>
+<text x="740" y="839" text-anchor="end" fill="#4b5a3d" font-family="Georgia,serif" font-size="34" font-style="italic">A little closer to nature.</text>
+<text x="740" y="868" text-anchor="end" fill="#68765b" font-family="sans-serif" font-size="10" letter-spacing="3">GENTLE BY NATURE. BEAUTIFUL BY YOU.</text>
+</svg>
