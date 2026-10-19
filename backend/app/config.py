@@ -36,8 +36,8 @@ class Settings(BaseSettings):
     # 业务空间专属域名为 https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com
     dashscope_base_url: str = "https://dashscope.aliyuncs.com"
     text_to_image_model: str = "qwen-image-3.0-pro"
-    image_edit_model: str = "qwen-image-edit-max"
-    planner_model: str = "qwen-plus"
+    image_edit_model: str = "qwen-image-2.0-pro"
+    planner_model: str = "qwen3.8-flash"
     # 去背景与点选分割分开配置，避免 rembg 默认下载 BRIA 权重
     background_removal_provider: str = "bria"
     bria_api_token: str = ""

@@ -40,5 +40,8 @@ def planner():
         api_key=settings.dashscope_api_key,
         base_url=f"{settings.dashscope_base_url}{_COMPATIBLE_PATH}",
         temperature=0,
+        # qwen3.8-flash 等混合思考模型在兼容模式下默认开思考；规划要即时出工具调用，
+        # 显式关闭以保持交互延迟与输出 token 成本
+        extra_body={"enable_thinking": False},
     )
     return model.bind_tools([_schema_of(spec) for spec in SPECS])
