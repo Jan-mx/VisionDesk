@@ -4,7 +4,7 @@
 *.pem
 *.key
 
-# 方案与过程文档不入库；README 截图例外
+# docs/ 文档体系仅本地维护不入库；根 README 截图例外
 docs/*
 !docs/images/
 !docs/images/**
@@ -29,8 +29,21 @@ dist/
 .data/
 *.log
 
+# 国内离线构建的预下载轮子与预构建虚拟环境（仅存在于服务器）
+.wheels/
+venv-prod/
+
 # 系统与编辑器
 .DS_Store
 .idea/
 .vscode/
 .zcode/
+
+# 前端原型与临时审查产物（仅本地）
+preview/
+
+# 部署敏感材料：含服务器 IP/域名的手册、nginx 域名配置与凭据不入库
+deploy/DEPLOY.md
+deploy/nginx-visiondesk.conf
+deploy/cloudflare.ini
+deploy/letsencrypt/

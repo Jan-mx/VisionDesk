@@ -1,0 +1,54 @@
+# 单容器一体化生产镜像：nginx + app + worker + postgres + redis + minio 由 supervisord 统一守护
+# 依赖构建上下文：venv-prod/（pip 预构建虚拟环境）、.wheels/（含 supervisor 轮子）
+ARG NODE_IMAGE=node:22-alpine
+
+# 前端构建产物由后端同源托管
+FROM ${NODE_IMAGE} AS frontend
+WORKDIR /build
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+# 从官方镜像提取 minio 二进制（经 docker hub 镜像加速拉取，避开 dl.min.io 直连）
+FROM minio/minio:latest AS miniobin
+
+FROM python:3.13-slim
+
+# 腾讯云境内：deb.debian.org 直连不稳定，换腾讯内网 Debian 源
+RUN sed -i 's|deb.debian.org|mirrors.cloud.tencent.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null; \
+    sed -i 's|deb.debian.org|mirrors.cloud.tencent.com|g' /etc/apt/sources.list 2>/dev/null; \
+    apt-get update \
+    && apt-get install -y --no-install-recommends \
+        nginx postgresql-17 redis-server fonts-wqy-microhei locales \
+    && sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && locale-gen \
+    && pg_dropcluster 17 main --stop 2>/dev/null || true \
+    && rm -f /etc/nginx/sites-enabled/default \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=miniobin /usr/bin/minio /usr/local/bin/minio
+
+WORKDIR /app/backend
+ENV PYTHONPATH=/app/backend
+ENV PATH="/app/backend/.venv/bin:$PATH"
+
+# 预构建虚拟环境（与镜像内解释器同源，路径一致可直接复制）
+COPY venv-prod/ /app/backend/.venv/
+
+# supervisor 进程管理器（纯 Python，从预下载轮子离线安装）
+COPY .wheels/ /tmp/wheels/
+RUN /app/backend/.venv/bin/pip install --no-index --find-links /tmp/wheels -q supervisor \
+    && rm -rf /tmp/wheels
+
+COPY backend/ ./
+COPY --from=frontend /build/dist /app/frontend/dist
+
+COPY deploy/nginx-visiondesk.conf /etc/nginx/conf.d/visiondesk.conf
+COPY deploy/supervisord.conf /etc/supervisor/supervisord.conf
+COPY deploy/entrypoint-allinone.sh /usr/local/bin/entrypoint-allinone.sh
+RUN chmod +x /usr/local/bin/entrypoint-allinone.sh /usr/local/bin/minio \
+    && mkdir -p /data /var/lib/postgresql/data \
+    && chown postgres:postgres /var/lib/postgresql/data
+
+EXPOSE 80 8443
+ENTRYPOINT ["/usr/local/bin/entrypoint-allinone.sh"]
