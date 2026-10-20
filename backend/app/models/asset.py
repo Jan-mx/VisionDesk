@@ -24,6 +24,10 @@ class AssetSource(enum.StrEnum):
     TOOL = "tool"
 
 
+# 会话内部派生 kind：创意库不展示、不参与本期清理（PRD §3、§7）
+UNMANAGEABLE_KINDS = frozenset({AssetKind.MASK, AssetKind.SUBJECT, AssetKind.BACKGROUND})
+
+
 class Asset(UUIDBase):
     __tablename__ = "assets"
 
@@ -38,3 +42,5 @@ class Asset(UUIDBase):
     height: Mapped[int]
     size_bytes: Mapped[int]
     has_alpha: Mapped[bool]
+    # 创意库手动命名；空值由前端回退元信息展示（PRD LIB-FR-006）
+    title: Mapped[str | None] = mapped_column(String(80), default=None)

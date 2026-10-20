@@ -9,7 +9,7 @@ from app.models import Asset, ToolRun
 from app.models.tool_run import RunStatus
 from app.providers import ProviderError
 from app.queue import enqueue
-from app.services import assets, runs, sessions
+from app.services import assets, guards, runs, sessions
 from app.tools import UnknownTool, spec_of
 from app.tools.context import ToolError
 
@@ -51,25 +51,63 @@ async def submit(
     return run
 
 
+async def dispatch(run: ToolRun) -> None:
+    """登记已提交后的队列投递；供外层自带锁临界区的调用方复用。"""
+    if spec_of(run.tool).queued:
+        await enqueue(TASK, run.id)
+
+
 async def execute(session: AsyncSession, run: ToolRun) -> None:
-    """统一的执行外壳：状态流转与失败兜底集中在此，具体工具只返回结果。"""
+    """统一的执行外壳：状态流转与失败兜底集中在此，具体工具只返回结果。
+
+    runs.start 之后捕获 retries 作为本次执行代次（WI 决策 2），经 contextvar
+    传递给 assets.create_from_bytes / sessions.apply_edit / runs.finish 做写入
+    资格校验；迟到代次的写入被静默丢弃，不改写当前任务状态。
+    """
+    # rollback 会使 ORM 实例过期，之后的属性访问触发同步懒加载；先记下标量
+    run_id = run.id
+    session_id = run.session_id
+    execution = None
     try:
         spec = spec_of(run.tool)
         await runs.start(session, run)
+        execution = guards.current_execution.set((run.id, run.retries))
         result = await spec.handler(session, run)
         await _record(session, run, result)
+    except guards.StaleExecution:
+        # 迟到执行：结果丢弃；finish 的资格校验同样会拒绝改写状态，无需再调用
+        logger.info("迟到执行的写入被丢弃 run_id=%s", run_id)
+        await session.rollback()
     except (ProviderError, UnknownTool, ToolError) as exc:
         await runs.finish(session, run, status=RunStatus.FAILED, error=str(exc))
     except Exception:
-        logger.exception("工具执行异常 tool=%s run_id=%s", run.tool, run.id)
+        logger.exception("工具执行异常 tool=%s run_id=%s", run.tool, run_id)
         await session.rollback()
+        await _safe_refresh(session, run)
         await runs.finish(session, run, status=RunStatus.FAILED, error="执行失败，请重试")
     else:
         await runs.finish(session, run, status=RunStatus.SUCCEEDED, result=result)
+    finally:
+        if execution is not None:
+            guards.current_execution.reset(execution)
 
     from app.services import agent as agent_service
 
-    await agent_service.continue_plan(session, run)
+    if session_id is None:
+        return
+    fresh = await session.get(ToolRun, run_id)
+    if fresh is not None:
+        await agent_service.continue_plan(session, fresh)
+
+
+async def _safe_refresh(session: AsyncSession, run: ToolRun) -> None:
+    """回滚后恢复实例的可读状态；行已被并发删除时静默跳过。"""
+    from sqlalchemy.exc import SQLAlchemyError
+
+    try:
+        await session.refresh(run)
+    except SQLAlchemyError:
+        pass
 
 
 async def _record(session: AsyncSession, run: ToolRun, result: dict) -> None:

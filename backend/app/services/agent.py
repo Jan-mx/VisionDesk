@@ -10,7 +10,7 @@ from app.agent import plan as plan_mod
 from app.layers import Layer, LayerDocument, LayerKind
 from app.models import AgentRun, EditSession, ToolRun
 from app.models.tool_run import RunStatus
-from app.services import assets, runs, selections, tools
+from app.services import assets, runs, selections, sessions, tools
 from app.tools import spec_of
 
 logger = logging.getLogger(__name__)
@@ -97,6 +97,10 @@ async def respond(session: AsyncSession, record: EditSession, goal: str) -> Agen
         status=status,
         error=error,
     )
+    # 规划（模型调用）已结束才取锁登记，与删除形成串行临界区（PRD §7.1）
+    from app.services import guards
+
+    await guards.user_lock(session, record.user_id)
     session.add(turn)
     await session.commit()
     await session.refresh(turn)
@@ -210,9 +214,16 @@ async def _advance(session: AsyncSession, turn: AgentRun) -> AgentRun:
             if spec_of(step["tool"]).needs_approval and not step.get("approved"):
                 step["status"] = plan_mod.WAITING
                 continue
-            run = await tools.submit(
-                session, turn.user_id, step["tool"], step["params"], turn.session_id
-            )
+            try:
+                run = await tools.submit(
+                    session, turn.user_id, step["tool"], step["params"], turn.session_id
+                )
+            except sessions.SessionNotFound:
+                # 会话在推进过程中被删除：后续步骤不再登记，整轮标记失败收尾
+                step["status"] = plan_mod.FAILED
+                turn.error = "会话已删除，计划已终止"
+                progressed = False
+                break
             step["run_id"] = str(run.id)
             step["status"] = run.status.value
             turn.plan = steps

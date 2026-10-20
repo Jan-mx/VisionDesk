@@ -26,3 +26,40 @@ export function useUploadAsset() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ASSETS_KEY }),
   })
 }
+
+export function useRenameAsset() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, title }: { id: string; title: string | null }) =>
+      assetsApi.patch(id, title),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ASSETS_KEY })
+      void queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      void queryClient.invalidateQueries({ queryKey: ['session'] })
+    },
+  })
+}
+
+export function useDeleteAsset() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => assetsApi.remove(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ASSETS_KEY })
+      void queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      void queryClient.invalidateQueries({ queryKey: ['session'] })
+    },
+  })
+}
+
+export function useBatchDeleteAssets() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (assetIds: string[]) => assetsApi.batchRemove(assetIds),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ASSETS_KEY })
+      void queryClient.invalidateQueries({ queryKey: ['sessions'] })
+      void queryClient.invalidateQueries({ queryKey: ['session'] })
+    },
+  })
+}

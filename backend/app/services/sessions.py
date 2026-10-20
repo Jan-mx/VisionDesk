@@ -1,12 +1,19 @@
+import hashlib
 import uuid
 from collections.abc import Iterable
 
+from pydantic import ValidationError
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import security
 from app.layers import BASE_LAYER_ID, LayerDocument, document_of
 from app.models import Asset, EditHistory, EditSession, SessionAsset
+from app.models.asset import UNMANAGEABLE_KINDS
 from app.models.edit_history import HISTORY_LIMIT
+from app.schemas.deletion import DeletionBlocker, SessionDeletionPreview
+from app.services import guards, runs
+from app.services.runs import ActiveTasks
 
 TITLE_LIMIT = 80
 DEFAULT_TITLE = "未命名会话"
@@ -22,6 +29,18 @@ class CannotUndo(Exception):
 
 class CannotRedo(Exception):
     pass
+
+
+class ReferenceStateInvalid(Exception):
+    """历史/文档引用无法安全解析，必须保守阻止删除（PRD §7）。"""
+
+
+class PreviewScopeChanged(Exception):
+    """预览与实际删除之间的 C(X)/D(X) 已变化（LIB-FR-015）。"""
+
+
+class ReferenceTargetGone(Exception):
+    """引用写入时目标素材已被并发删除，写入被拒绝（PRD §7.1）。"""
 
 
 def normalize_title(text: str | None) -> str:
@@ -119,7 +138,22 @@ async def apply_edit(
     result: dict | None = None,
     bump_revision: bool = True,
 ) -> EditSession:
-    """应用一次可撤销编辑：先截断重做分支，再写入文档快照。"""
+    """应用一次可撤销编辑：先截断重做分支，再写入文档快照。
+
+    引用写入的唯一汇聚点：与删除共用同用户锁，worker 迟到代次在此被丢弃；
+    锁内重校验引用素材仍存在，避免「删除先提交→悬空引用」（PRD §7.1）。
+    """
+    await guards.user_lock(session, record.user_id)
+    await guards.assert_writable(session)
+    referenced = [current] if current is not None else []
+    referenced += [asset for asset in extra_assets if asset is not None]
+    if referenced:
+        found = set(
+            await session.scalars(select(Asset.id).where(Asset.id.in_([a.id for a in referenced])))
+        )
+        if found != {asset.id for asset in referenced}:
+            raise ReferenceTargetGone("引用的素材已被删除")
+
     before = snapshot(record)
     next_current = record.current_asset_id
     next_document = record.document
@@ -178,7 +212,15 @@ async def create(
     wall: Iterable[Asset] = (),
     title: str | None = None,
 ) -> EditSession:
-    """新建会话。current 进入画布，wall 中其余图片仅进图片墙备选。"""
+    """新建会话。current 进入画布，wall 中其余图片仅进图片墙备选。
+
+    与删除同锁串行，锁内重校验素材仍存在（PRD §7.1）。
+    """
+    await guards.user_lock(session, user_id)
+    wanted = {asset.id for asset in wall} | {current.id}
+    found = set(await session.scalars(select(Asset.id).where(Asset.id.in_(wanted))))
+    if found != wanted:
+        raise ReferenceTargetGone("引用的素材已被删除")
     record = EditSession(
         user_id=user_id,
         title=normalize_title(title),
@@ -228,7 +270,7 @@ async def list_for_user(
     result = await session.scalars(
         select(EditSession)
         .where(EditSession.user_id == user_id)
-        .order_by(EditSession.updated_at.desc())
+        .order_by(EditSession.updated_at.desc(), EditSession.id.asc())
         .limit(limit)
     )
     return list(result)
@@ -370,3 +412,208 @@ async def redo(session: AsyncSession, record: EditSession) -> EditSession:
     await session.commit()
     await session.refresh(record)
     return record
+
+
+# ---- 创意库 LIB：R(X)/C(X)/D(X) 全量引用扫描与会话删除（PRD §7、§8）----
+
+
+def _as_uuid(raw: object) -> uuid.UUID:
+    if not isinstance(raw, str):
+        raise ReferenceStateInvalid("引用中的素材 ID 不是字符串")
+    try:
+        return uuid.UUID(raw)
+    except ValueError as exc:
+        raise ReferenceStateInvalid("引用中的素材 ID 无法解析") from exc
+
+
+def _collect_state(state: object, type_: str, found: dict[uuid.UUID, set[str]]) -> None:
+    """从一段 before/result 状态里收集 current_asset_id 与 document 图层引用。
+
+    只认既有结构（current_asset_id / document.layers[].asset_id），
+    不递归把任意 JSON 字符串猜作素材 ID（PRD §7）。
+    """
+    if not isinstance(state, dict):
+        raise ReferenceStateInvalid("历史快照结构损坏")
+    current = state.get("current_asset_id")
+    if current is not None:
+        found.setdefault(_as_uuid(current), set()).add(type_)
+    document = state.get("document")
+    if document is not None:
+        try:
+            layers = LayerDocument.model_validate(document).layers
+        except ValidationError as exc:
+            raise ReferenceStateInvalid("画布文档无法解析") from exc
+        for layer in layers:
+            if layer.asset_id is not None:
+                found.setdefault(layer.asset_id, set()).add(type_)
+
+
+async def reference_map(session: AsyncSession, record: EditSession) -> dict[uuid.UUID, set[str]]:
+    """会话 X 的受保护引用集合 R(X)：asset_id -> 引用类型。
+
+    覆盖 original/current、当前 document 全部图层（含隐藏图层）与全部保留历史
+    （params.before 与 result，含重做分支）；损坏数据抛 ReferenceStateInvalid。
+    """
+    try:
+        document_layers = LayerDocument.model_validate(record.document).layers
+    except ValidationError as exc:
+        raise ReferenceStateInvalid("画布文档无法解析") from exc
+
+    found: dict[uuid.UUID, set[str]] = {
+        record.original_asset_id: {"original"},
+        record.current_asset_id: {"current"},
+    }
+    for layer in document_layers:
+        if layer.asset_id is not None:
+            found.setdefault(layer.asset_id, set()).add("layer")
+
+    entries = await session.scalars(
+        select(EditHistory).where(EditHistory.session_id == record.id)
+    )
+    for entry in entries:
+        params = entry.params if isinstance(entry.params, dict) else None
+        if params is None:
+            raise ReferenceStateInvalid("编辑历史参数损坏")
+        before = params.get("before")
+        if before is not None:
+            _collect_state(before, "history", found)
+        result = entry.result if isinstance(entry.result, dict) else None
+        if result is None:
+            raise ReferenceStateInvalid("编辑历史结果损坏")
+        _collect_state(result, "history", found)
+    return found
+
+
+async def references_of_user(
+    session: AsyncSession, user_id: uuid.UUID, *, strict: bool = True
+    ) -> dict[uuid.UUID, dict[uuid.UUID, tuple[str, set[str]]]]:
+    """全量引用索引：asset_id -> {session_id: (title, types)}。
+
+    供单删/批删的 R(X) 检查与素材库 leftover 全量归属判断；strict=False 时
+    跳过无法解析的会话（列表展示不因脏数据失败，删除路径保持 strict）。
+    """
+    index: dict[uuid.UUID, dict[uuid.UUID, tuple[str, set[str]]]] = {}
+    records = await session.scalars(select(EditSession).where(EditSession.user_id == user_id))
+    for record in records:
+        try:
+            found = await reference_map(session, record)
+        except ReferenceStateInvalid:
+            if strict:
+                raise
+            continue
+        for asset_id, types in found.items():
+            entry = index.setdefault(asset_id, {})
+            _, merged = entry.get(record.id, (record.title, set()))
+            entry[record.id] = (record.title, merged | types)
+    return index
+
+
+async def deletion_scan(
+    session: AsyncSession, record: EditSession
+) -> tuple[set[uuid.UUID], set[uuid.UUID]]:
+    """计算 (C(X), D(X))，全部基于数据库全量数据，不受列表 limit 影响。"""
+    collection = set((await reference_map(session, record)).keys())
+    collection |= set(
+        await session.scalars(
+            select(SessionAsset.asset_id).where(SessionAsset.session_id == record.id)
+        )
+    )
+
+    # 其他会话的墙与 R(Y)：任何一处引用都使素材脱离 D(X)
+    others_wall = set(
+        await session.scalars(
+            select(SessionAsset.asset_id)
+            .join(EditSession, EditSession.id == SessionAsset.session_id)
+            .where(EditSession.user_id == record.user_id, EditSession.id != record.id)
+        )
+    )
+    for other in await session.scalars(
+        select(EditSession).where(
+            EditSession.user_id == record.user_id, EditSession.id != record.id
+        )
+    ):
+        others_wall |= set((await reference_map(session, other)).keys())
+
+    rows = (
+        list(await session.scalars(select(Asset).where(Asset.id.in_(collection))))
+        if collection
+        else []
+    )
+    by_id = {asset.id: asset for asset in rows}
+    deletable = {
+        asset_id
+        for asset_id in collection
+        if asset_id in by_id
+        and by_id[asset_id].user_id == record.user_id
+        and by_id[asset_id].kind not in UNMANAGEABLE_KINDS
+        and asset_id not in others_wall
+    }
+    return collection, deletable
+
+
+def _digest(ids: set[uuid.UUID]) -> str:
+    joined = ",".join(sorted(str(item) for item in ids))
+    return hashlib.sha256(joined.encode()).hexdigest()
+
+
+async def deletion_preview_for_user(
+    session: AsyncSession, record: EditSession
+) -> SessionDeletionPreview:
+    """只读预览：活动任务门禁 + 全量 C/D 计数 + 签名确认凭证。"""
+    blocked = await runs.has_active_tasks(session, record.user_id)
+    collection, deletable = await deletion_scan(session, record)
+    token, expires_at = security.issue_deletion_token(
+        record.user_id, record.id, _digest(collection), _digest(deletable)
+    )
+    blockers = (
+        [DeletionBlocker(code="active_tasks", message="有任务或计划未结束，请完成或取消后重试")]
+        if blocked
+        else []
+    )
+    return SessionDeletionPreview(
+        session_id=record.id,
+        delete_asset_count=len(deletable),
+        retained_asset_count=len(collection - deletable),
+        blocked=blocked,
+        blockers=blockers,
+        preview_token=token,
+        expires_at=expires_at,
+    )
+
+
+async def delete_for_user(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    session_id: uuid.UUID,
+    *,
+    expect: dict | None = None,
+) -> list[tuple[uuid.UUID, str]]:
+    """会话删除临界区：锁内全量重算全部安全条件后删除（PRD FR-015）。
+
+    会话删除、子表级联与 D(X) 资产删除在同一事务内完成；返回待清理的
+    (asset_id, storage_key)，调用方在事务提交后执行对象清理（LIB-FR-017）。
+    """
+    pending: list[tuple[uuid.UUID, str]] = []
+    async with guards.critical(session, user_id):
+        record = await session.scalar(
+            select(EditSession).where(EditSession.id == session_id, EditSession.user_id == user_id)
+        )
+        if record is None:
+            raise SessionNotFound
+        if await runs.has_active_tasks(session, user_id):
+            raise ActiveTasks("有任务或计划未结束，请完成或取消后重试")
+        collection, deletable = await deletion_scan(session, record)
+        if expect is not None:
+            if _digest(collection) != expect.get("c") or _digest(deletable) != expect.get("d"):
+                raise PreviewScopeChanged
+        if deletable:
+            pending = [
+                (asset.id, asset.storage_key)
+                for asset in await session.scalars(select(Asset).where(Asset.id.in_(deletable)))
+            ]
+        # 显式保证会话删除/flush 在资产删除前（PRD §7）
+        await session.delete(record)
+        await session.flush()
+        if deletable:
+            await session.execute(delete(Asset).where(Asset.id.in_(deletable)))
+    return pending

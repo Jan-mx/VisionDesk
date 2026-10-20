@@ -1,4 +1,4 @@
-import { ApiError, apiError } from '@/api/client'
+import { api, apiError } from '@/api/client'
 
 export type AssetKind =
   | 'original'
@@ -18,8 +18,20 @@ export type Asset = {
   height: number
   size_bytes: number
   has_alpha: boolean
+  title?: string | null
   created_at: string
   url: string
+}
+
+export type BatchSkippedItem = {
+  id: string
+  code: string
+  reason: string
+}
+
+export type BatchDeleteOut = {
+  deleted: string[]
+  skipped: BatchSkippedItem[]
 }
 
 export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024
@@ -43,15 +55,14 @@ export const assetsApi = {
     return response.json()
   },
 
-  async list(limit = 50): Promise<Asset[]> {
-    const response = await fetch(`/api/assets?limit=${limit}`)
-    if (!response.ok) throw new ApiError(response.status, '读取素材失败')
-    return response.json()
-  },
+  list: (limit = 50) => api.get<Asset[]>(`/assets?limit=${limit}`),
 
-  async library(limit = 50): Promise<LibraryGroup[]> {
-    const response = await fetch(`/api/assets/library?limit=${limit}`)
-    if (!response.ok) throw new ApiError(response.status, '读取素材失败')
-    return response.json()
-  },
+  library: (limit = 50) => api.get<LibraryGroup[]>(`/assets/library?limit=${limit}`),
+
+  patch: (id: string, title: string | null) => api.patch<Asset>(`/assets/${id}`, { title }),
+
+  remove: (id: string) => api.delete<void>(`/assets/${id}`),
+
+  batchRemove: (asset_ids: string[]) =>
+    api.post<BatchDeleteOut>('/assets/batch-delete', { asset_ids }),
 }

@@ -2,16 +2,40 @@ import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile, status
+from fastapi.responses import Response
 
 from app.db import SessionDep
 from app.deps import CurrentUser
 from app.models.asset import AssetKind, AssetSource
-from app.schemas.asset import AssetOut, LibraryGroupOut
+from app.schemas.asset import AssetOut, AssetPatchIn, LibraryGroupOut
+from app.schemas.deletion import (
+    BatchDeleteIn,
+    BatchDeleteOut,
+    BatchSkippedItem,
+    DeletionErrorDetail,
+)
 from app.services import assets as asset_service
 from app.services.assets import ORPHAN_TITLE
 from app.services.images import MAX_FILE_BYTES, ImageRejected, probe
+from app.services.runs import ActiveTasks
+from app.services.sessions import ReferenceStateInvalid
 
 router = APIRouter(prefix="/assets", tags=["assets"])
+
+
+def _not_found() -> HTTPException:
+    """新端点统一 404：不区分不存在与非本人资源（LIB-FR-011）。"""
+    detail = DeletionErrorDetail(code="not_found", message="资源不存在")
+    return HTTPException(
+        status.HTTP_404_NOT_FOUND, detail=detail.model_dump(mode="json", exclude_none=True)
+    )
+
+
+def _conflict(code: str, message: str, references: list | None = None) -> HTTPException:
+    detail = DeletionErrorDetail(code=code, message=message, references=references)
+    return HTTPException(
+        status.HTTP_409_CONFLICT, detail=detail.model_dump(mode="json", exclude_none=True)
+    )
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -62,6 +86,66 @@ async def list_library(
         )
         for record, cover, assets in groups
     ]
+
+
+@router.post("/batch-delete")
+async def batch_delete_assets(
+    payload: BatchDeleteIn, user: CurrentUser, session: SessionDep
+) -> BatchDeleteOut:
+    """批量删除（LIB-FR-008 / PRD §8.2）：去重保序后请求级校验 + 逐项独立事务。"""
+    # 静态路由声明在 /{asset_id} 之前（PRD §8）
+    unique = list(dict.fromkeys(payload.asset_ids))
+    try:
+        deleted, skipped = await asset_service.batch_delete_for_user(session, user.id, unique)
+    except asset_service.AssetNotFound as exc:
+        raise _not_found() from exc
+    except ActiveTasks as exc:
+        raise _conflict("active_tasks", str(exc) or "有任务或计划未结束") from exc
+    return BatchDeleteOut(
+        deleted=deleted,
+        skipped=[BatchSkippedItem(**item) for item in skipped],
+    )
+
+
+@router.patch("/{asset_id}")
+async def rename_asset(
+    asset_id: uuid.UUID, payload: AssetPatchIn, user: CurrentUser, session: SessionDep
+) -> AssetOut:
+    """素材重命名（LIB-FR-006）：trim 后空白归一 null，超 80 码点 422。"""
+    asset = await asset_service.get_for_user(session, user.id, asset_id)
+    if asset is None:
+        raise _not_found()
+    return AssetOut.of(await asset_service.rename(session, asset, payload.title))
+
+
+@router.delete("/{asset_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_asset(
+    asset_id: uuid.UUID, user: CurrentUser, session: SessionDep
+) -> Response:
+    """素材单删（LIB-FR-007）：R(X) 全量引用保护 + 活动任务门禁。"""
+    try:
+        key = await asset_service.delete_for_user(session, user.id, asset_id)
+    except asset_service.AssetNotFound as exc:
+        raise _not_found() from exc
+    except asset_service.UnsupportedAssetKind as exc:
+        raise _conflict(
+            "unsupported_asset_kind", "会话内部派生素材，本期不支持删除"
+        ) from exc
+    except ActiveTasks as exc:
+        raise _conflict("active_tasks", str(exc) or "有任务或计划未结束") from exc
+    except asset_service.AssetInUse as exc:
+        raise _conflict(
+            "asset_in_use",
+            "素材仍被会话的原图、当前图、图层或编辑历史引用，请先删除对应会话",
+            exc.references,
+        ) from exc
+    except ReferenceStateInvalid as exc:
+        raise _conflict(
+            "reference_state_invalid", "引用数据无法安全解析，请先修复数据后再删除"
+        ) from exc
+    # 对象清理在 DB 提交之后执行；失败仅告警（LIB-FR-017）
+    await asset_service.cleanup_object(key, asset_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{asset_id}")

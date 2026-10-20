@@ -125,9 +125,24 @@ export type SelectInput = {
   append?: boolean
 }
 
+export type DeletionBlocker = {
+  code: string
+  message: string
+}
+
+export type SessionDeletionPreview = {
+  session_id: string
+  delete_asset_count: number
+  retained_asset_count: number
+  blocked: boolean
+  blockers: DeletionBlocker[]
+  preview_token: string
+  expires_at: string
+}
+
 export const sessionsApi = {
   create: (input: SessionCreateInput) => api.post<SessionDetail>('/sessions', input),
-  list: () => api.get<Session[]>('/sessions'),
+  list: (limit = 50) => api.get<Session[]>(`/sessions?limit=${limit}`),
   get: (id: string) => api.get<SessionDetail>(`/sessions/${id}`),
   patch: (id: string, input: SessionPatchInput) =>
     api.patch<SessionDetail>(`/sessions/${id}`, input),
@@ -140,6 +155,12 @@ export const sessionsApi = {
   prepareSelection: (id: string) => api.post<void>(`/sessions/${id}/selection/prepare`),
   getSelection: (id: string) => api.get<Selection | null>(`/sessions/${id}/selection`),
   clearSelection: (id: string) => api.delete<void>(`/sessions/${id}/selection`),
+  deletionPreview: (id: string) =>
+    api.get<SessionDeletionPreview>(`/sessions/${id}/deletion-preview`),
+  remove: (id: string, previewToken: string) =>
+    api.delete<void>(`/sessions/${id}`, {
+      headers: { 'X-Deletion-Preview': previewToken },
+    }),
   export: (id: string, asset_ids: string[] = []) => downloadExport(id, asset_ids),
 }
 

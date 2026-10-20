@@ -5,11 +5,35 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import events
+from app.models.agent_run import AgentRun
 from app.models.tool_run import RunStatus, ToolRun
+from app.services import guards
+
+_ACTIVE = (RunStatus.QUEUED, RunStatus.RUNNING)
 
 
 class RunNotFound(Exception):
     pass
+
+
+class ActiveTasks(Exception):
+    """本人存在 queued/running 任务或待确认计划，删除被保守门禁拒绝（LIB-FR-014）。"""
+
+
+async def has_active_tasks(session: AsyncSession, user_id: uuid.UUID) -> bool:
+    tool = await session.scalar(
+        select(ToolRun.id)
+        .where(ToolRun.user_id == user_id, ToolRun.status.in_(_ACTIVE))
+        .limit(1)
+    )
+    if tool is not None:
+        return True
+    agent = await session.scalar(
+        select(AgentRun.id)
+        .where(AgentRun.user_id == user_id, AgentRun.status.in_(_ACTIVE))
+        .limit(1)
+    )
+    return agent is not None
 
 
 def snapshot(run: ToolRun) -> dict:
@@ -30,13 +54,33 @@ async def create(
     tool: str,
     params: dict,
     session_id: uuid.UUID | None = None,
+    *,
+    locked: bool = True,
 ) -> ToolRun:
+    """登记一次任务。默认自带用户锁临界区（登记 vs 删除互斥）。
+
+    locked=False 供外层已持锁的调用方（如批量提交链路）合入同一事务；
+    同一事务内会重校验 session 存在，避免「删除先提交→登记悬空引用」。
+    """
+    if locked:
+        await guards.user_lock(session, user_id)
+    if session_id is not None:
+        from app.models import EditSession
+
+        exists = await session.scalar(select(EditSession.id).where(EditSession.id == session_id))
+        if exists is None:
+            from app.services.sessions import SessionNotFound
+
+            raise SessionNotFound
     run = ToolRun(
         user_id=user_id, session_id=session_id, tool=tool, params=params, stage="等待开始"
     )
     session.add(run)
-    await session.commit()
-    await session.refresh(run)
+    if locked:
+        await session.commit()
+        await session.refresh(run)
+    else:
+        await session.flush()
     return run
 
 
@@ -97,6 +141,16 @@ async def finish(
     result: dict | None = None,
     error: str | None = None,
 ) -> None:
+    """任务只有取得写入资格才能标终态（PRD §7.1）。
+
+    迟到的旧执行（被取消/回收/重试接管）在这里被静默丢弃，
+    不得改写当前状态；API 取消与失联收割路径无执行上下文，照常生效。
+    """
+    await guards.user_lock(session, run.user_id)
+    try:
+        await guards.assert_writable(session)
+    except guards.StaleExecution:
+        return
     run.status = status
     run.result = result or {}
     run.error = error

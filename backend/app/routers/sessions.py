@@ -1,7 +1,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Header, HTTPException, Query, status
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,6 +10,7 @@ from app.deps import CurrentUser
 from app.models import Asset, EditSession, User
 from app.schemas.agent import MessageIn, TurnOut
 from app.schemas.asset import AssetOut
+from app.schemas.deletion import DeletionErrorDetail, SessionDeletionPreview
 from app.schemas.export import ExportIn
 from app.schemas.run import RunOut
 from app.schemas.session import (
@@ -23,17 +24,33 @@ from app.schemas.session import (
     ToolInvokeIn,
     ToolInvokeOut,
 )
+from app.security import PreviewTokenError, PreviewTokenExpired, read_deletion_token
 from app.services import agent as agent_service
 from app.services import assets as asset_service
 from app.services import exports, selections, sessions, tools
 from app.services.agent import CannotCancel, CannotConfirm, CannotRetry, TurnNotFound
 from app.services.exports import UnknownExportAsset
+from app.services.runs import ActiveTasks
 from app.services.selections import EmptySelection, StaleSelection
-from app.services.sessions import CannotRedo, CannotUndo, SessionNotFound
+from app.services.sessions import (
+    CannotRedo,
+    CannotUndo,
+    PreviewScopeChanged,
+    ReferenceStateInvalid,
+    ReferenceTargetGone,
+    SessionNotFound,
+)
 from app.services.tools import InvalidParams
 from app.tools import UnknownTool
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
+
+
+def _deletion_error(
+    status_code: int, code: str, message: str, references: list | None = None
+) -> HTTPException:
+    detail = DeletionErrorDetail(code=code, message=message, references=references)
+    return HTTPException(status_code, detail=detail.model_dump(mode="json", exclude_none=True))
 
 
 async def _asset(session: AsyncSession, user: User, asset_id: uuid.UUID) -> Asset:
@@ -73,7 +90,11 @@ async def create_session(
         if asset_id != current.id
     ]
 
-    record = await sessions.create(session, user.id, current, wall, payload.title)
+    try:
+        record = await sessions.create(session, user.id, current, wall, payload.title)
+    except ReferenceTargetGone as exc:
+        # 锁内重校验发现素材已被并发删除：与素材不存在同型处理
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "素材不存在") from exc
     return await _detail(session, record)
 
 
@@ -104,7 +125,11 @@ async def patch_session(
         record = await sessions.rename(session, record, payload.title)
     if payload.current_asset_id is not None:
         asset = await _asset(session, user, payload.current_asset_id)
-        record = await sessions.switch_current(session, record, asset)
+        try:
+            record = await sessions.switch_current(session, record, asset)
+        except ReferenceTargetGone as exc:
+            # 引用写入与素材删除竞争，删除先提交：写入被拒绝（PRD §7.1）
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "素材不存在") from exc
 
     return await _detail(session, record)
 
@@ -187,6 +212,9 @@ async def invoke_tool(
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
     except InvalidParams as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    except SessionNotFound as exc:
+        # 登记临界区内会话已被并发删除：任务不入队（PRD §7.1）
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "会话不存在") from exc
     record = await sessions.get_for_user(session, record.id, user.id)
     return ToolInvokeOut(run=RunOut.of(run), session=await _detail(session, record))
 
@@ -293,3 +321,78 @@ async def retry_plan(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "对话不存在") from exc
     except CannotRetry as exc:
         raise HTTPException(status.HTTP_409_CONFLICT, "没有失败的步骤可重试") from exc
+
+
+# ---- 创意库 LIB：会话删除预览与删除（PRD §8 / LIB-FR-004、015）----
+
+
+@router.get("/{session_id}/deletion-preview")
+async def preview_session_deletion(
+    session_id: uuid.UUID, user: CurrentUser, session: SessionDep
+) -> SessionDeletionPreview:
+    try:
+        record = await sessions.get_for_user(session, session_id, user.id)
+    except SessionNotFound as exc:
+        # 不区分不存在与非本人资源（LIB-FR-011）
+        raise _deletion_error(status.HTTP_404_NOT_FOUND, "not_found", "资源不存在") from exc
+    try:
+        return await sessions.deletion_preview_for_user(session, record)
+    except ReferenceStateInvalid as exc:
+        raise _deletion_error(
+            status.HTTP_409_CONFLICT,
+            "reference_state_invalid",
+            "引用数据无法安全解析，请先修复数据后再删除",
+        ) from exc
+
+
+@router.delete("/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_session(
+    session_id: uuid.UUID,
+    user: CurrentUser,
+    session: SessionDep,
+    x_deletion_preview: Annotated[str | None, Header()] = None,
+) -> Response:
+    # 归属校验在先（404），token 绑定与签名校验在后（LIB-FR-015）
+    try:
+        await sessions.get_for_user(session, session_id, user.id)
+    except SessionNotFound as exc:
+        raise _deletion_error(status.HTTP_404_NOT_FOUND, "not_found", "资源不存在") from exc
+
+    if not x_deletion_preview:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "缺少删除确认凭证")
+    try:
+        expect = read_deletion_token(x_deletion_preview)
+    except PreviewTokenError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "删除确认凭证无效") from exc
+    except PreviewTokenExpired as exc:
+        raise _deletion_error(
+            status.HTTP_409_CONFLICT, "delete_preview_expired", "确认凭证已过期，请刷新预览后重试"
+        ) from exc
+    if expect.get("u") != str(user.id) or expect.get("s") != str(session_id):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "删除确认凭证与该会话不匹配")
+
+    try:
+        keys = await sessions.delete_for_user(session, user.id, session_id, expect=expect)
+    except SessionNotFound as exc:
+        raise _deletion_error(status.HTTP_404_NOT_FOUND, "not_found", "资源不存在") from exc
+    except ActiveTasks as exc:
+        raise _deletion_error(
+            status.HTTP_409_CONFLICT, "active_tasks", str(exc) or "有任务或计划未结束"
+        ) from exc
+    except ReferenceStateInvalid as exc:
+        raise _deletion_error(
+            status.HTTP_409_CONFLICT,
+            "reference_state_invalid",
+            "引用数据无法安全解析，请先修复数据后再删除",
+        ) from exc
+    except PreviewScopeChanged as exc:
+        raise _deletion_error(
+            status.HTTP_409_CONFLICT,
+            "delete_preview_changed",
+            "删除范围已变化，请刷新预览后重新确认",
+        ) from exc
+
+    # 对象清理在 DB 提交之后执行；失败仅告警，不回滚业务删除（LIB-FR-017）
+    for asset_id, key in keys:
+        await asset_service.cleanup_object(key, asset_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

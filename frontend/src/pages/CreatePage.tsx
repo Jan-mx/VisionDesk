@@ -1,4 +1,4 @@
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 
 import AssetLibrary from '@/components/AssetLibrary'
 import GenerateForm from '@/components/GenerateForm'
@@ -87,6 +87,13 @@ export default function CreatePage() {
             <h2 className="text-ink text-lg font-bold">最近的创意</h2>
             <p className="text-muted mt-0.5 text-xs">历史素材库与会话记录</p>
           </div>
+          <Link
+            to="/library"
+            className="text-brand hover:text-brand-strong flex items-center gap-1 text-xs font-semibold transition-colors"
+          >
+            <span>查看创意库</span>
+            <span>→</span>
+          </Link>
         </div>
 
         {isPending ? (

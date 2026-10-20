@@ -17,8 +17,11 @@ const LIST_KEY = ['sessions']
 const detailKey = (id: string) => ['session', id]
 const historyKey = (id: string) => ['session', id, 'history']
 
-export function useSessions() {
-  return useQuery({ queryKey: LIST_KEY, queryFn: sessionsApi.list })
+export function useSessions(limit = 50) {
+  return useQuery({
+    queryKey: [...LIST_KEY, limit],
+    queryFn: () => sessionsApi.list(limit),
+  })
 }
 
 export function useSession(id: string | null) {
@@ -42,6 +45,7 @@ function useCacheSession(id: string) {
   return (detail: SessionDetail) => {
     queryClient.setQueryData(detailKey(id), detail)
     void queryClient.invalidateQueries({ queryKey: LIST_KEY })
+    void queryClient.invalidateQueries({ queryKey: ['assets'] })
     void queryClient.invalidateQueries({ queryKey: historyKey(id) })
   }
 }
@@ -53,6 +57,7 @@ export function useCreateSession() {
     onSuccess: (detail) => {
       queryClient.setQueryData(detailKey(detail.id), detail)
       void queryClient.invalidateQueries({ queryKey: LIST_KEY })
+      void queryClient.invalidateQueries({ queryKey: ['assets'] })
     },
   })
 }
@@ -62,6 +67,21 @@ export function usePatchSession(id: string) {
   return useMutation({
     mutationFn: (input: SessionPatchInput) => sessionsApi.patch(id, input),
     onSuccess: cache,
+  })
+}
+
+export function useDeleteSession() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, previewToken }: { id: string; previewToken: string }) =>
+      sessionsApi.remove(id, previewToken),
+    onSuccess: (_, { id }) => {
+      void queryClient.cancelQueries({ queryKey: ['session', id] })
+      queryClient.removeQueries({ queryKey: ['session', id] })
+      void queryClient.invalidateQueries({ queryKey: LIST_KEY })
+      void queryClient.invalidateQueries({ queryKey: ['assets'] })
+      void queryClient.invalidateQueries({ queryKey: ['session'] })
+    },
   })
 }
 

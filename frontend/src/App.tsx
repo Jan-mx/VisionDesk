@@ -8,6 +8,7 @@ import CandidatesPage from '@/pages/CandidatesPage'
 import CreatePage from '@/pages/CreatePage'
 import EditorPage from '@/pages/EditorPage'
 import LandingPage from '@/pages/LandingPage'
+import LibraryPage from '@/pages/LibraryPage'
 import MarketingPage from '@/pages/MarketingPage'
 
 export default function App() {
@@ -22,6 +23,7 @@ export default function App() {
             <Route path="/create" element={<CreatePage />} />
             <Route path="/editor" element={<EditorPage />} />
             <Route path="/editor/:sessionId" element={<EditorPage />} />
+            <Route path="/library" element={<LibraryPage />} />
             <Route path="/marketing" element={<MarketingPage />} />
             <Route path="/marketing/:sessionId" element={<MarketingPage />} />
             <Route path="/batch" element={<BatchPage />} />

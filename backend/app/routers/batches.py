@@ -8,7 +8,7 @@ from app.db import SessionDep
 from app.deps import CurrentUser
 from app.schemas.batch import BatchIn, BatchOut
 from app.schemas.run import RunOut
-from app.services import batch, runs, tools
+from app.services import batch, guards, runs, tools
 from app.services.batch import EmptyBatch, UnknownBatchAsset
 from app.services.runs import RunNotFound
 from app.services.tools import InvalidParams
@@ -19,14 +19,20 @@ router = APIRouter(prefix="/batches", tags=["batches"])
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
 async def create_batch(payload: BatchIn, user: CurrentUser, session: SessionDep) -> RunOut:
-    try:
-        await batch.require_assets(session, user.id, payload.asset_ids)
-    except UnknownBatchAsset as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "素材不存在") from exc
-    try:
-        run = await tools.submit(session, user.id, BATCH_NAME, payload.model_dump(mode="json"))
-    except InvalidParams as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+    # 归属校验与任务登记在同一用户锁临界区内完成：删除先提交则此处 404、零登记（PRD §7.1）
+    async with guards.critical(session, user.id):
+        try:
+            await batch.require_assets(session, user.id, payload.asset_ids)
+        except UnknownBatchAsset as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "素材不存在") from exc
+        try:
+            params = tools.validate(BATCH_NAME, payload.model_dump(mode="json"))
+        except InvalidParams as exc:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(exc)) from exc
+        run = await runs.create(session, user.id, BATCH_NAME, params, None, locked=False)
+    # 登记已提交后才投递队列
+    await tools.dispatch(run)
+    await session.refresh(run)
     return RunOut.of(run)
 
 
