@@ -23,11 +23,14 @@ export default function ImageWall({
   disabled: boolean
   onPick: (assetId: string) => void
 }) {
+  // 最新一张快照常驻墙上：点走其他素材后，最新画布版本仍有入口可点回
+  const latestSnapshotId = [...assets].reverse().find((asset) => asset.kind === 'snapshot')?.id
   const visibleAssets = assets
     .filter((asset) => asset.kind !== 'mask')
     .filter(
       (asset) =>
         asset.id === currentId ||
+        asset.id === latestSnapshotId ||
         (asset.kind !== 'subject' && asset.kind !== 'background' && asset.kind !== 'snapshot'),
     )
 
