@@ -86,17 +86,24 @@ async def select_strokes(
     canvas = record.document
     size = (canvas["width"], canvas["height"])
     current = await get(record.id, revision)
-    base = None
     markers = list((current or {}).get("markers") or [])
+    base = None
     if current:
         asset_id = uuid.UUID(current["mask_asset_id"])
         asset = await assets.get_for_user(session, record.user_id, asset_id)
         if asset is not None:
-            base = to_luma(await storage.get(asset.storage_key), size)
-    mask = rasterize_strokes(size, strokes, radius=radius, base=base)
-    if base is not None:
-        mask = union(base, mask)
-    return await _store(session, record, revision, overlay_png(mask), markers)
+            base = await storage.get(asset.storage_key)
+
+    def render() -> bytes:
+        previous = to_luma(base, size) if base is not None else None
+        mask = rasterize_strokes(size, strokes, radius=radius, base=previous)
+        if previous is not None:
+            mask = union(previous, mask)
+        return overlay_png(mask)
+
+    # 遮罩栅格化与着色是纯像素循环，留在事件循环里会卡住整只 worker
+    overlay = await asyncio.to_thread(render)
+    return await _store(session, record, revision, overlay, markers)
 
 
 async def _store(

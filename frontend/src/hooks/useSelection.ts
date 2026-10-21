@@ -44,6 +44,22 @@ export function useSelection(sessionId: string, revision: number) {
     void sessionsApi.prepareSelection(sessionId).catch(() => undefined)
   }, [selectMode, sessionId, revision])
 
+  // 刷新或重进编辑器时恢复服务端还留着的选区；本地已有或画布已变时不覆盖
+  useEffect(() => {
+    let cancelled = false
+    void sessionsApi
+      .getSelection(sessionId)
+      .then((body) => {
+        if (cancelled || !body || body.revision !== revision) return
+        if (useEditorUi.getState().selection) return
+        setSelection(toCanvas(body))
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [sessionId, revision, setSelection])
+
   const select = useMutation({
     mutationFn: (input: SelectInput) => sessionsApi.select(sessionId, input),
     onSuccess: (body, input) => {

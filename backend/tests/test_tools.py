@@ -1,3 +1,5 @@
+import asyncio
+import time
 import uuid
 
 import httpx
@@ -317,6 +319,31 @@ async def test_brush_selection_creates_a_mask(signed_in: httpx.AsyncClient):
     )
 
     assert body["mask"]["has_alpha"] is True
+
+
+async def test_brush_selection_does_not_block_the_event_loop(signed_in: httpx.AsyncClient):
+    session = await open_session(signed_in, image=scene((2000, 2000)))
+
+    async def probe() -> float:
+        worst = 0.0
+        last = time.perf_counter()
+        for _ in range(60):
+            await asyncio.sleep(0.01)
+            now = time.perf_counter()
+            worst = max(worst, now - last)
+            last = now
+        return worst
+
+    watching = asyncio.create_task(probe())
+    await select(
+        signed_in,
+        session["id"],
+        session["revision"],
+        strokes=[[{"x": 0.3, "y": 0.3}, {"x": 0.7, "y": 0.3}, {"x": 0.7, "y": 0.7}, {"x": 0.3, "y": 0.7}]],
+    )
+    worst_gap = await watching
+
+    assert worst_gap < 0.2, f"事件循环被阻塞了 {worst_gap * 1000:.0f}ms"
 
 
 async def test_erase_region_adopts_masked_result(signed_in: httpx.AsyncClient):

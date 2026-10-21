@@ -84,7 +84,6 @@ export default function LayerPanel({
               ...params,
               mask_asset_id: selection?.maskId,
               revision: session.revision,
-              layer_id: selectedLayerId,
             })
           }
         />

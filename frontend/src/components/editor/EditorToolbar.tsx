@@ -161,7 +161,6 @@ export default function EditorToolbar({
                 tools.invoke('erase_region', {
                   mask_asset_id: picking.selection?.maskId,
                   revision: session.revision,
-                  layer_id: ui.selectedLayerId,
                 })
               }
             >
