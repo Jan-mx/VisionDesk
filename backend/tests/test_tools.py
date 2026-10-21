@@ -417,6 +417,55 @@ async def test_split_layers_replaces_base_with_subject_and_background(
     assert [entry["action"] for entry in entries] == ["split_layers", "create_session"]
 
 
+async def test_split_layers_refines_background_at_canvas_size(
+    signed_in: httpx.AsyncClient, edit_requests: list
+):
+    session = await open_session(signed_in, image=scene())
+
+    await apply(signed_in, session["id"], "split_layers")
+
+    assert len(edit_requests) == 1
+    request = edit_requests[0]
+    assert (request.width, request.height) == (320, 240)
+
+
+async def test_split_layers_subject_layer_is_bounding_box(signed_in: httpx.AsyncClient):
+    """主体层裁到非透明包围盒并原位摆放，拖出画布后是紧贴内容的独立图。"""
+    session = await open_session(signed_in, image=scene())
+    updated = await apply(signed_in, session["id"], "split_layers")
+
+    subject = layers(updated)["subject"]
+    asset = next(a for a in updated["assets"] if a["id"] == subject["asset_id"])
+    assert (subject["width"], subject["height"]) == (asset["width"], asset["height"])
+    # scene 的椭圆为 (80,40)-(240,200)：外接框 160×160，容差留给抠图边缘
+    assert abs(subject["width"] - 160) <= 4
+    assert abs(subject["height"] - 160) <= 4
+    assert abs(subject["transform"]["x"] - 80) <= 4
+    assert abs(subject["transform"]["y"] - 40) <= 4
+
+
+async def test_replace_region_sends_layer_size(signed_in: httpx.AsyncClient, edit_requests: list):
+    session = await open_session(signed_in, image=scene())
+
+    await apply(signed_in, session["id"], "replace_region", {"prompt": "把椭圆改成方形"})
+
+    assert len(edit_requests) == 1
+    request = edit_requests[0]
+    assert (request.width, request.height) == (320, 240)
+
+
+async def test_replace_background_sends_canvas_size(
+    signed_in: httpx.AsyncClient, edit_requests: list
+):
+    session = await open_session(signed_in)
+
+    await apply(signed_in, session["id"], "replace_background", {"prompt": "浅木色桌面"})
+
+    assert len(edit_requests) == 1
+    request = edit_requests[0]
+    assert (request.width, request.height) == (320, 240)
+
+
 async def test_switching_back_after_split_restoreslayers(signed_in: httpx.AsyncClient):
     session = await open_session(signed_in, image=scene())
     split = await invoke(signed_in, session["id"], "split_layers")

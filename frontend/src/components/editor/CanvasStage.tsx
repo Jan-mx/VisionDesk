@@ -495,12 +495,13 @@ function DocumentLayer({
   }, [stamp, pinned, selected])
 
   return (
+    // 对比分屏时按半幅 clip；正常模式不裁剪，图层拖出画布在灰底上仍可见可点
     <KonvaLayer
       listening={interactive}
-      clipX={clip?.x ?? 0}
-      clipY={clip?.y ?? 0}
-      clipWidth={clip?.width ?? document.width}
-      clipHeight={clip?.height ?? document.height}
+      clipX={clip?.x}
+      clipY={clip?.y}
+      clipWidth={clip?.width}
+      clipHeight={clip?.height}
     >
       {layers.map((layer) =>
         layer.kind === 'text' ? (

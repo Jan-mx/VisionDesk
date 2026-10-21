@@ -39,6 +39,22 @@ async def test_batch_remove_background_writes_export_assets(signed_in: httpx.Asy
     assert all(item["outputs"][0]["kind"] == "export" for item in body["items"])
 
 
+async def test_batch_replace_background_sends_source_size(
+    signed_in: httpx.AsyncClient, edit_requests: list
+):
+    asset_id = await upload(signed_in, (400, 300))
+    run = await start_batch(
+        signed_in, [asset_id], [{"tool": "replace_background", "params": {"prompt": "纯白"}}]
+    )
+    await run_tool({}, uuid.UUID(run["id"]))
+
+    body = (await signed_in.get(f"/api/batches/{run['id']}")).json()
+    assert body["run"]["status"] == "succeeded"
+    assert len(edit_requests) == 1
+    request = edit_requests[0]
+    assert (request.width, request.height) == (400, 300)
+
+
 async def test_batch_delivery_sizes_and_zip(signed_in: httpx.AsyncClient):
     asset_id = await upload(signed_in)
     run = await start_batch(

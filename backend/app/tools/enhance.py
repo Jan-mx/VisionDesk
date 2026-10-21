@@ -1,3 +1,6 @@
+import io
+
+from PIL import Image
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -65,12 +68,16 @@ async def replace_background_exec(session: AsyncSession, run: ToolRun) -> dict:
     else:
         source = await layer_image(session, record, target)
     await runs.report(session, run, 30, "生成新背景")
+    # 不带尺寸时模型默认出 2048×2048 最大档，又慢又与画布不符
+    size = Image.open(io.BytesIO(source)).size
     images = await get_image_provider().edit(
         EditRequest(
             prompt=f"只替换背景，保持主体、光线和边缘不变。新背景：{run.params['prompt']}",
             image=source,
             count=run.params["count"],
             negative_prompt=run.params.get("negative_prompt"),
+            width=size[0],
+            height=size[1],
         ),
         on_progress=lambda progress, stage: _progress(session, run, progress, stage),
     )

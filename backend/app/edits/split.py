@@ -112,6 +112,16 @@ def alpha_mask(data: bytes) -> bytes:
     return overlay_png(alpha)
 
 
+def crop_to_alpha(data: bytes) -> tuple[bytes, int, int, int, int] | None:
+    """裁掉四周全透明边缘，返回 PNG 与原位（left, top, width, height）；整幅透明返回 None。"""
+    image = Image.open(io.BytesIO(data)).convert("RGBA")
+    box = image.getchannel("A").getbbox()
+    if box is None:
+        return None
+    left, top, right, bottom = box
+    return _png(image.crop(box)), left, top, right - left, bottom - top
+
+
 def split_document(
     document: LayerDocument,
     *,
@@ -119,7 +129,10 @@ def split_document(
     subject_id,
     texts: list[TextBox],
     subject_hash: str | None = None,
+    subject_box: tuple[int, int, int, int] | None = None,
 ) -> LayerDocument:
+    # 主体层默认占整画布；有包围盒时裁成紧贴内容的独立图并原位摆放
+    left, top, width, height = subject_box or (0, 0, document.width, document.height)
     layers = [
         Layer(
             id=BACKGROUND_LAYER_ID,
@@ -134,9 +147,10 @@ def split_document(
             id=SUBJECT_LAYER_ID,
             kind=LayerKind.IMAGE,
             name="主体",
-            width=document.width,
-            height=document.height,
+            width=width,
+            height=height,
             asset_id=subject_id,
+            transform=Transform(x=left, y=top),
             source_hash=subject_hash,
         ),
         *[_text_layer(index, box) for index, box in enumerate(texts, start=1)],

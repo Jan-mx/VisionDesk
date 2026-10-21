@@ -14,6 +14,7 @@ from app.edits.split import (
     already_promoted,
     already_split,
     as_background_and_object,
+    crop_to_alpha,
     cut_object,
     expand_mask,
     fill_background,
@@ -53,11 +54,17 @@ async def _store(session: AsyncSession, run: ToolRun, data: bytes, kind: AssetKi
 
 async def _fill_hole(session: AsyncSession, run: ToolRun, source: bytes, mask: bytes) -> bytes:
     # 先挖空再填，模型只看到没有主体的图，避免又把主体画回背景
-    hole = expand_mask(mask, Image.open(io.BytesIO(source)).size)
+    size = Image.open(io.BytesIO(source)).size
+    hole = expand_mask(mask, size)
     prepared = await asyncio.to_thread(fill_background, source, hole)
     edited = (
         await get_image_provider().edit(
-            EditRequest(prompt=_RECONSTRUCT, image=prepared),
+            EditRequest(
+                prompt=_RECONSTRUCT,
+                image=prepared,
+                width=size[0],
+                height=size[1],
+            ),
             on_progress=lambda progress, stage: runs.report(session, run, progress, stage),
         )
     )[0]
@@ -87,6 +94,12 @@ async def split_layers_exec(session: AsyncSession, run: ToolRun) -> dict:
                 remove_text, subject, background, texts, size
             )
 
+    # 主体裁到非透明包围盒：层是紧贴内容的独立图，拖出画布不留大片透明
+    cut = await asyncio.to_thread(crop_to_alpha, subject)
+    subject_box = None
+    if cut is not None:
+        subject, *subject_box = cut
+
     subject_asset = await _store(session, run, subject, AssetKind.SUBJECT)
     background_asset = await _store(session, run, background, AssetKind.BACKGROUND)
     next_document = split_document(
@@ -95,6 +108,7 @@ async def split_layers_exec(session: AsyncSession, run: ToolRun) -> dict:
         subject_id=subject_asset.id,
         texts=texts,
         subject_hash=mask_hash(mask),
+        subject_box=subject_box,
     )
     await selections.clear(record.id)
     return {

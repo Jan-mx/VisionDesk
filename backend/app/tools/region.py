@@ -1,3 +1,6 @@
+import io
+
+from PIL import Image
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -59,9 +62,15 @@ async def _edit_region(session: AsyncSession, run: ToolRun, *, scoped: str, whol
     source = await layer_image(session, record, layer)
     local_mask = _region(source, mask, layer, (document.width, document.height))
     await runs.report(session, run, 40, "局部生成")
+    size = Image.open(io.BytesIO(source)).size
     edited = (
         await get_image_provider().edit(
-            EditRequest(prompt=whole if mask is None else scoped, image=source),
+            EditRequest(
+                prompt=whole if mask is None else scoped,
+                image=source,
+                width=size[0],
+                height=size[1],
+            ),
             on_progress=lambda progress, stage: runs.report(session, run, progress, stage),
         )
     )[0]

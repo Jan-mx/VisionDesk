@@ -62,6 +62,22 @@ def skip_ocr():
     settings.ocr_provider = original
 
 
+@pytest.fixture
+def edit_requests(monkeypatch):
+    """捕获发给图像模型的编辑请求（mock provider 之下），用于断言输出尺寸。"""
+    from app.providers.mock import MockImageProvider
+
+    captured: list[object] = []
+    original = MockImageProvider.edit
+
+    async def spy(self, request, on_progress=None):
+        captured.append(request)
+        return await original(self, request, on_progress)
+
+    monkeypatch.setattr(MockImageProvider, "edit", spy)
+    return captured
+
+
 def _test_redis_url(url: str) -> str:
     head, _, tail = url.rpartition("/")
     return f"{head}/{TEST_REDIS_DB}" if tail.isdigit() else f"{url.rstrip('/')}/{TEST_REDIS_DB}"

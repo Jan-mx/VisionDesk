@@ -65,12 +65,15 @@ async def apply_op(
         return [await get_image_provider().upscale(data, scale)]
     if operation.tool == "replace_background":
         parsed = ReplaceBackgroundIn.model_validate(operation.params)
+        meta = probe(data)
         return await get_image_provider().edit(
             EditRequest(
                 prompt=f"只替换背景，保持主体、光线和边缘不变。新背景：{parsed.prompt}",
                 image=data,
                 count=1,
                 negative_prompt=parsed.negative_prompt,
+                width=meta.width,
+                height=meta.height,
             )
         )
     if operation.tool == "expand_canvas":
