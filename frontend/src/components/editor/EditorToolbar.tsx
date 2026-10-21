@@ -330,21 +330,18 @@ export default function EditorToolbar({
             垂直翻转
           </Button>
 
-          {([2, 4] as const).map((scale) => (
-            <Button
-              key={scale}
-              disabled={tools.busy}
-              progress={running('upscale_image', (params) => params.scale === scale)}
-              title={
-                wallOnly(session.document)
-                  ? `放大到 ${scale} 倍，已拆层所以结果只进图片墙`
-                  : `把当前画布放大到 ${scale} 倍`
-              }
-              onClick={() => tools.invoke('upscale_image', { scale })}
-            >
-              超分 {scale}X
-            </Button>
-          ))}
+          <Button
+            disabled={tools.busy}
+            progress={running('upscale_image')}
+            title={
+              wallOnly(session.document)
+                ? '升清画布（模型上限 2048），已拆层所以结果只进图片墙'
+                : '升清画布到模型上限 2048，画布随之升级'
+            }
+            onClick={() => tools.invoke('upscale_image', { scale: 2 })}
+          >
+            超分 2K
+          </Button>
 
           <Button
             disabled={tools.busy}
