@@ -1,3 +1,6 @@
+import ast
+import json
+import re
 from functools import lru_cache
 from typing import TypedDict
 
@@ -7,7 +10,7 @@ from langgraph.graph import END, START, StateGraph
 from app.agent.llm import planner
 from app.agent.plan import PlanError, validate
 from app.services import tools as tool_service
-from app.tools import UnknownTool, label_of
+from app.tools import SPECS, UnknownTool, label_of, spec_of
 
 _SYSTEM = """你是电商图片修图助手，通过调用工具完成用户的修图请求。
 
@@ -40,6 +43,17 @@ _SYSTEM = """你是电商图片修图助手，通过调用工具完成用户的�
 
 _FALLBACK_REPLY = "没太理解这条指令，换个说法或说得更具体一些。"
 _REFUSAL_LIMIT = 60
+_CALL_LIKE = re.compile(r"^[a-z_][a-z0-9_]*\s*\(")
+_TOOL_USE_BLOCK = re.compile(r'^\[\s*\{\s*"type"\s*:\s*"tool_use"')
+_TAG_LIKE = re.compile(r"^\[[a-z]+(:[^\]]*)?\]$")
+_TOOL_CALL_TAG = re.compile(r"\[/?TOOL_CALL\]", re.IGNORECASE)
+_TOOL_CALL_SEGMENT = re.compile(r"\[TOOL_CALL\](.*?)\[/TOOL_CALL\]", re.DOTALL | re.IGNORECASE)
+
+
+@lru_cache
+def _registered_call_pattern() -> re.Pattern[str]:
+    names = "|".join(re.escape(spec.name) for spec in SPECS)
+    return re.compile(rf"\b(?:{names})\s*\(")
 
 
 class AgentState(TypedDict):
@@ -56,9 +70,16 @@ async def _plan(state: AgentState) -> AgentState:
             HumanMessage(state["goal"]),
         ]
     )
+    calls = message.tool_calls
+    reply = _text_of(message)
+    if not calls:
+        # 模型偶发把调用写进正文而不走结构化通道；整段恰为一个裸调用时恢复其意图
+        recovered = _recover_tool_calls(reply)
+        if recovered is not None:
+            calls, reply = recovered, ""
     return {
-        "plan": [{"tool": call["name"], "params": call["args"]} for call in message.tool_calls],
-        "reply": _text_of(message),
+        "plan": [{"tool": call["name"], "params": call["args"]} for call in calls],
+        "reply": reply,
     }
 
 
@@ -92,12 +113,14 @@ def spoken(reply: str, plan: list[dict]) -> str:
     """有计划就按步骤说话；没计划才用兜底或截成一句拒绝。"""
     text = (reply or "").strip()
     if plan:
-        if text and text != _FALLBACK_REPLY:
+        if text and text != _FALLBACK_REPLY and not _looks_internal(text):
             return text
         labels = "、".join(label_of(step["tool"], step.get("params")) for step in plan)
         if len(plan) > 1:
             return f"将按以下步骤执行：{labels}。确认后开始。"
         return f"好，正在{labels}。"
+    if _looks_internal(text):
+        return _FALLBACK_REPLY
     return _one_sentence(text) if text else _FALLBACK_REPLY
 
 
@@ -117,3 +140,115 @@ def _text_of(message: AIMessage) -> str:
     return "".join(
         block.get("text", "") for block in message.content if isinstance(block, dict)
     ).strip()
+
+
+def _looks_like_call(text: str) -> bool:
+    return _CALL_LIKE.match((text or "").strip()) is not None
+
+
+def _looks_internal(text: str) -> bool:
+    """裸调用签名、tool_use JSON 块、[TOOL_CALL] 标签、[mode: …] 一类内部格式都不该说给用户。"""
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    if stripped[0] in "[{":
+        try:
+            json.loads(stripped)
+            return True  # 整段合法 JSON 是结构化数据，不是自然语言
+        except ValueError:
+            pass
+    return bool(
+        _CALL_LIKE.match(stripped)
+        or _TOOL_USE_BLOCK.match(stripped)
+        or _TAG_LIKE.match(stripped)
+        or _TOOL_CALL_TAG.search(stripped)
+        or _registered_call_pattern().search(stripped)
+    )
+
+
+def _recover_tool_calls(text: str) -> list[dict] | None:
+    """从正文恢复模型没走结构化通道的工具调用，恢复不了返回 None。
+
+    只认三种整段形态：`tool(prompt="…")` 裸调用、`[{"type":"tool_use",…}]` JSON 块、
+    `[TOOL_CALL]…[/TOOL_CALL]` 标签。ast.parse/json.loads 都不执行代码，
+    参数值逐个过 literal_eval 只允许字面量；工具名必须命中注册表，
+    恢复出的计划照常走 validate() 校验。
+    """
+    stripped = (text or "").strip()
+    segments = _TOOL_CALL_SEGMENT.findall(stripped)
+    if segments:
+        if _TOOL_CALL_SEGMENT.sub("", stripped).strip():
+            return None  # 标签外还有别的话，不是纯泄漏
+        calls = []
+        for inner in segments:
+            recovered = _recover_one(inner.strip())
+            if recovered is None:
+                return None
+            calls.extend(recovered)
+        return calls or None
+    if _looks_like_call(stripped) or stripped.startswith(("{", "[")):
+        return _recover_one(stripped)
+    return None
+
+
+def _recover_one(inner: str) -> list[dict] | None:
+    """恢复单段调用：JSON 块、`name(args)` 裸调用或光杆工具名。"""
+    if inner.startswith(("[", "{")):
+        try:
+            parsed = json.loads(inner)
+        except ValueError:
+            return None
+        blocks = parsed if isinstance(parsed, list) else [parsed]
+        calls = [_recover_block(block) for block in blocks]
+        if any(call is None for call in calls) or not calls:
+            return None
+        return calls
+    try:
+        call = ast.parse(inner, mode="eval").body
+    except SyntaxError:
+        return None
+    if isinstance(call, ast.Name):  # 光杆工具名，参数缺失交给 validate() 拦截
+        try:
+            spec_of(call.id)
+        except UnknownTool:
+            return None
+        return [{"name": call.id, "args": {}}]
+    if not (
+        isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and not call.args  # 位置参数含义不明，不猜
+        and all(keyword.arg is not None for keyword in call.keywords)
+    ):
+        return None
+    try:
+        params = {keyword.arg: ast.literal_eval(keyword.value) for keyword in call.keywords}
+    except (ValueError, SyntaxError):
+        return None
+    try:
+        spec_of(call.func.id)
+    except UnknownTool:
+        return None
+    return [{"name": call.func.id, "args": params}]
+
+
+def _recover_block(block: object) -> dict | None:
+    if not isinstance(block, dict):
+        return None
+    name = block.get("name")
+    params = block.get("input", block.get("args", block.get("arguments")))
+    function = block.get("function")
+    if isinstance(function, dict):  # OpenAI 风格 {"function": {"name":…, "arguments":…}}
+        name = function.get("name") or name
+        params = function.get("arguments", params)
+    if isinstance(params, str):  # OpenAI 的 arguments 常是 JSON 字符串
+        try:
+            params = json.loads(params)
+        except ValueError:
+            return None
+    if not isinstance(name, str) or not isinstance(params, dict):
+        return None
+    try:
+        spec_of(name)
+    except UnknownTool:
+        return None
+    return {"name": name, "args": params}

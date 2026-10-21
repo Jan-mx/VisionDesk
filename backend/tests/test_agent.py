@@ -122,6 +122,149 @@ def test_spoken_ignores_fallback_when_plan_exists():
     )
 
 
+async def test_bare_call_text_is_recovered_and_dispatched(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    fake_planner(AIMessage(content='replace_background(prompt="草坪背景")'))
+    session_id = (await open_session(signed_in))["id"]
+
+    turn = await send(signed_in, session_id, "给背景换成草坪")
+
+    assert [step["tool"] for step in turn["steps"]] == ["replace_background"]
+    assert "换背景" in turn["reply"]
+    assert "replace_background" not in turn["reply"]
+
+
+async def test_call_echo_alongside_real_calls_is_ignored(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    fake_planner(
+        AIMessage(
+            content='replace_background(prompt="草坪背景")',
+            tool_calls=[
+                {"name": "replace_background", "args": {"prompt": "草坪背景"}, "id": "call_1"}
+            ],
+        )
+    )
+    session_id = (await open_session(signed_in))["id"]
+
+    turn = await send(signed_in, session_id, "给背景换成草坪")
+
+    assert [step["tool"] for step in turn["steps"]] == ["replace_background"]
+    assert "换背景" in turn["reply"]
+    assert "replace_background" not in turn["reply"]
+
+
+async def test_bare_call_with_unregistered_tool_falls_back(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    fake_planner(AIMessage(content='do_magic(prompt="变魔术")'))
+    session_id = (await open_session(signed_in))["id"]
+
+    turn = await send(signed_in, session_id, "变个魔术")
+
+    assert turn["steps"] == []
+    assert turn["reply"] == "没太理解这条指令，换个说法或说得更具体一些。"
+
+
+async def test_tool_use_blocks_in_text_are_recovered_and_dispatched(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    fake_planner(
+        AIMessage(
+            content=(
+                '[{"type":"tool_use","id":"call_1","name":"replace_background",'
+                '"input":{"prompt":"草坪背景"}}]'
+            )
+        )
+    )
+    session_id = (await open_session(signed_in))["id"]
+
+    turn = await send(signed_in, session_id, "给背景换成草坪")
+
+    assert [step["tool"] for step in turn["steps"]] == ["replace_background"]
+    assert "换背景" in turn["reply"]
+    assert "tool_use" not in turn["reply"]
+
+
+async def test_tool_call_tag_with_args_is_recovered_and_dispatched(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    fake_planner(AIMessage(content='[TOOL_CALL]replace_background(prompt="草坪背景")[/TOOL_CALL]'))
+    session_id = (await open_session(signed_in))["id"]
+
+    turn = await send(signed_in, session_id, "给背景换成草坪")
+
+    assert [step["tool"] for step in turn["steps"]] == ["replace_background"]
+    assert "换背景" in turn["reply"]
+    assert "TOOL_CALL" not in turn["reply"]
+
+
+async def test_tool_call_tag_with_bare_name_reports_missing_params(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    fake_planner(AIMessage(content="[TOOL_CALL]replace_background[/TOOL_CALL]"))
+    session_id = (await open_session(signed_in))["id"]
+
+    turn = await send(signed_in, session_id, "给背景换成草坪")
+
+    assert turn["steps"] == []
+    assert turn["reply"].startswith("这一步暂时执行不了")
+    assert "TOOL_CALL" not in turn["reply"]
+
+
+async def test_mode_tag_echo_is_ignored(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    fake_planner(
+        AIMessage(
+            content="[mode: compositional]",
+            tool_calls=[
+                {"name": "replace_background", "args": {"prompt": "草坪背景"}, "id": "call_1"}
+            ],
+        )
+    )
+    session_id = (await open_session(signed_in))["id"]
+
+    turn = await send(signed_in, session_id, "给背景换成草坪")
+
+    assert [step["tool"] for step in turn["steps"]] == ["replace_background"]
+    assert "换背景" in turn["reply"]
+    assert "mode" not in turn["reply"]
+
+
+def test_recover_tool_calls_from_bare_text():
+    from app.agent.graph import _recover_tool_calls
+
+    assert _recover_tool_calls('replace_background(prompt="草坪背景")') == [
+        {"name": "replace_background", "args": {"prompt": "草坪背景"}}
+    ]
+    assert _recover_tool_calls(
+        '[{"type":"tool_use","id":"call_1","name":"replace_background","input":{"prompt":"草坪"}}]'
+    ) == [{"name": "replace_background", "args": {"prompt": "草坪"}}]
+    assert _recover_tool_calls('[TOOL_CALL]replace_background[/TOOL_CALL]') == [
+        {"name": "replace_background", "args": {}}
+    ]
+    assert _recover_tool_calls('{"name":"adjust_image","arguments":{"brightness":0.2}}') == [
+        {"name": "adjust_image", "args": {"brightness": 0.2}}
+    ]
+    assert _recover_tool_calls("现有工具做不到这个。") is None
+    assert _recover_tool_calls('do_magic(prompt="变魔术")') is None
+    assert _recover_tool_calls("replace_background(prompt=)") is None
+    assert _recover_tool_calls('[{"type":"tool_use","name":"replace_background"}]') is None
+    assert _recover_tool_calls("稍等，[TOOL_CALL]flip_layer()[/TOOL_CALL] 马上") is None
+
+
+def test_spoken_suppresses_call_echo_mid_text():
+    from app.agent.graph import spoken
+
+    plan = [{"tool": "replace_background", "params": {"prompt": "草坪"}}]
+    assert "replace_background" not in spoken('开始替换：replace_region(prompt="红色")', plan)
+    assert "好，正在换背景" in spoken('开始替换：replace_region(prompt="红色")', plan)
+    # 自然语言提到工具名但没有调用括号，不算泄漏
+    assert spoken("replace_region 需要完整提示词，做不到。", []) == "replace_region 需要完整提示词，做不到。"
+
+
 async def test_canvas_facts_are_given_to_the_planner(signed_in: httpx.AsyncClient, fake_planner):
     fake = fake_planner(AIMessage(content="好的。"))
     session_id = (await open_session(signed_in))["id"]
