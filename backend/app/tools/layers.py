@@ -31,7 +31,15 @@ from app.providers import EditRequest, get_image_provider
 from app.services import assets, runs, selections
 from app.services import background as background_service
 from app.tools.base import HIDDEN_MASK, MaskRef, ToolSpec
-from app.tools.context import ToolError, document_of, flatten_session, require_session
+from app.tools.context import (
+    ToolError,
+    attach_snapshot,
+    document_of,
+    flatten_session,
+    logger,
+    require_session,
+    snapshot_canvas,
+)
 from app.tools.target import require_selection
 
 _RECONSTRUCT = (
@@ -111,10 +119,17 @@ async def split_layers_exec(session: AsyncSession, run: ToolRun) -> dict:
         subject_box=subject_box,
     )
     await selections.clear(record.id)
-    return {
+    result = {
         "document": next_document.model_dump(mode="json"),
         "asset_ids": [str(background_asset.id), str(subject_asset.id)],
     }
+    try:
+        snapshot = await snapshot_canvas(session, run, record, next_document)
+    except Exception:
+        logger.warning("canvas snapshot failed after split", exc_info=True)
+        return result
+    attach_snapshot(result, snapshot)
+    return result
 
 
 async def promote_object_exec(session: AsyncSession, run: ToolRun) -> dict:
@@ -174,10 +189,17 @@ async def promote_object_exec(session: AsyncSession, run: ToolRun) -> dict:
     if name:
         next_document.layers[-1].name = name
     await selections.clear(record.id)
-    return {
+    result = {
         "document": next_document.model_dump(mode="json"),
         "asset_ids": [str(asset.id) for asset in created],
     }
+    try:
+        snapshot = await snapshot_canvas(session, run, record, next_document)
+    except Exception:
+        logger.warning("canvas snapshot failed after promote", exc_info=True)
+        return result
+    attach_snapshot(result, snapshot)
+    return result
 
 
 async def _promote_onto_split(

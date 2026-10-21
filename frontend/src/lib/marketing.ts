@@ -34,6 +34,7 @@ export const KIND_LABELS: Record<AssetKind, string> = {
   mask: '遮罩',
   marketing: '营销',
   export: '导出',
+  snapshot: '画布',
 }
 
 export function ratioLabel(width: number, height: number): string {

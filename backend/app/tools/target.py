@@ -16,7 +16,13 @@ from app.models import EditSession, ToolRun
 from app.models.asset import AssetKind, AssetSource
 from app.services import assets, selections
 from app.services.selections import EmptySelection, StaleSelection
-from app.tools.context import ToolError, document_of
+from app.tools.context import (
+    ToolError,
+    attach_snapshot,
+    document_of,
+    logger,
+    snapshot_canvas,
+)
 
 STALE_SELECTION = "画幅已变，选区失效，请重新选择"
 
@@ -67,7 +73,7 @@ async def write_layer_image(
     data: bytes,
     kind: AssetKind,
 ) -> dict:
-    """把处理结果写回指定图层，多层时不拍平、不切换当前图。"""
+    """把处理结果写回指定图层；单层时直接采用层图，多层时拍平快照锚定「当前作品」。"""
     document = document_of(record).model_copy(deep=True)
     layer = resolve_layer(document, layer_id)
     if layer.kind is not LayerKind.IMAGE:
@@ -80,6 +86,14 @@ async def write_layer_image(
     }
     if _single_image(document):
         result["adopt_asset_id"] = str(asset.id)
+        return result
+    try:
+        snapshot = await snapshot_canvas(session, run, record, document)
+    except Exception:
+        # 快照是展示增强：失败降级为只写层，不影响编辑本身
+        logger.warning("canvas snapshot failed after writing layer %s", layer_id, exc_info=True)
+        return result
+    attach_snapshot(result, snapshot)
     return result
 
 

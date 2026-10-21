@@ -16,6 +16,7 @@ class AssetKind(enum.StrEnum):
     MASK = "mask"
     MARKETING = "marketing"
     EXPORT = "export"
+    SNAPSHOT = "snapshot"
 
 
 class AssetSource(enum.StrEnum):
@@ -25,7 +26,13 @@ class AssetSource(enum.StrEnum):
 
 
 # 会话内部派生 kind：创意库不展示、不参与本期清理（PRD §3、§7）
-UNMANAGEABLE_KINDS = frozenset({AssetKind.MASK, AssetKind.SUBJECT, AssetKind.BACKGROUND})
+UNMANAGEABLE_KINDS = frozenset(
+    {AssetKind.MASK, AssetKind.SUBJECT, AssetKind.BACKGROUND, AssetKind.SNAPSHOT}
+)
+
+# 会话删除时仍保留的隐藏派生 kind（拆层产物可能有复用价值）；
+# 快照为纯展示锚点，随会话一并清理，故不在保留集
+SESSION_RETAINED_KINDS = frozenset({AssetKind.MASK, AssetKind.SUBJECT, AssetKind.BACKGROUND})
 
 
 class Asset(UUIDBase):

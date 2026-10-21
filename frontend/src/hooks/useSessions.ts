@@ -32,14 +32,6 @@ export function useSession(id: string | null) {
   })
 }
 
-export function useSessionHistory(id: string | null) {
-  return useQuery({
-    queryKey: historyKey(id ?? ''),
-    queryFn: () => sessionsApi.history(id as string),
-    enabled: Boolean(id),
-  })
-}
-
 function useCacheSession(id: string) {
   const queryClient = useQueryClient()
   return (detail: SessionDetail) => {

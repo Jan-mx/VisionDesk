@@ -8,6 +8,7 @@ const KIND_LABELS: Record<AssetKind, string> = {
   mask: '遮罩',
   marketing: '营销',
   export: '导出',
+  snapshot: '画布',
 }
 
 /** 会话内全部图片胶卷墙（复现 creative-v1 方案 A · 104px 高度独立滚动） */
@@ -26,7 +27,8 @@ export default function ImageWall({
     .filter((asset) => asset.kind !== 'mask')
     .filter(
       (asset) =>
-        asset.id === currentId || (asset.kind !== 'subject' && asset.kind !== 'background'),
+        asset.id === currentId ||
+        (asset.kind !== 'subject' && asset.kind !== 'background' && asset.kind !== 'snapshot'),
     )
 
   return (

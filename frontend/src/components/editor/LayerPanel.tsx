@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
 
 import type { Asset } from '@/api/assets'
-import { ACTION_LABELS, type Layer, type SessionDetail } from '@/api/sessions'
+import { type Layer, type SessionDetail } from '@/api/sessions'
 import { BackgroundForm, ExpandForm, ReplaceForm } from '@/components/editor/GenerateEdits'
 import Button from '@/components/ui/Button'
-import { useSessionHistory, type SessionTools } from '@/hooks/useSessions'
-import { formatBytes, formatDateTime } from '@/lib/format'
+import { type SessionTools } from '@/hooks/useSessions'
+import { formatBytes } from '@/lib/format'
 import { wallOnly } from '@/lib/layers'
 import { useEditorUi, type Panel } from '@/stores/editorUi'
 
@@ -41,7 +41,6 @@ export default function LayerPanel({
   panel: Panel
 }) {
   const current = session.assets.find((asset) => asset.id === session.current_asset_id)
-  const { data: history = [] } = useSessionHistory(session.id)
   const selectedLayerId = useEditorUi((state) => state.selectedLayerId)
   const selectLayer = useEditorUi((state) => state.selectLayer)
   const selection = useEditorUi((state) => state.selection)
@@ -194,23 +193,6 @@ export default function LayerPanel({
 
       <Section title="属性">
         <Properties document={session.document} current={current} revision={session.revision} />
-      </Section>
-
-      <Section title="编辑记录">
-        {history.length === 0 ? (
-          <p className="text-faint text-xs">暂无记录</p>
-        ) : (
-          <ol className="space-y-1.5">
-            {history.map((entry) => (
-              <li key={entry.seq} className="flex items-baseline justify-between gap-2 text-xs">
-                <span className="text-ink">{ACTION_LABELS[entry.action] ?? entry.action}</span>
-                <span className="text-faint shrink-0 tabular-nums">
-                  {formatDateTime(entry.created_at)}
-                </span>
-              </li>
-            ))}
-          </ol>
-        )}
       </Section>
     </aside>
   )

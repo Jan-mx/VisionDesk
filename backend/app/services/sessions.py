@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app import security
 from app.layers import BASE_LAYER_ID, LayerDocument, document_of
 from app.models import Asset, EditHistory, EditSession, SessionAsset
-from app.models.asset import UNMANAGEABLE_KINDS
+from app.models.asset import SESSION_RETAINED_KINDS
 from app.models.edit_history import HISTORY_LIMIT
 from app.schemas.deletion import DeletionBlocker, SessionDeletionPreview
 from app.services import guards, runs
@@ -545,7 +545,7 @@ async def deletion_scan(
         for asset_id in collection
         if asset_id in by_id
         and by_id[asset_id].user_id == record.user_id
-        and by_id[asset_id].kind not in UNMANAGEABLE_KINDS
+        and by_id[asset_id].kind not in SESSION_RETAINED_KINDS
         and asset_id not in others_wall
     }
     return collection, deletable

@@ -212,8 +212,8 @@ async def test_deletion_preview_dedups_and_retains_working_kinds(signed_in: http
 
     preview = await deletion_preview(signed_in, session["id"])
 
-    # 可删除：当前底图（原图+当前+图层+历史去重）与纯墙 extra
-    assert preview["delete_asset_count"] == 2
+    # 可删除：当前底图（原图+图层+历史去重）、纯墙 extra、拆层产生的画布快照（随会话清理）
+    assert preview["delete_asset_count"] == 3
     # 保留：subject / background 两个派生素材
     assert preview["retained_asset_count"] == 2
     assert preview["blocked"] is False

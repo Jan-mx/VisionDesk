@@ -8,6 +8,7 @@ export type AssetKind =
   | 'mask'
   | 'marketing'
   | 'export'
+  | 'snapshot'
 
 export type Asset = {
   id: string

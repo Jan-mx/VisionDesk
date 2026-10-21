@@ -406,7 +406,10 @@ async def test_split_layers_replaces_base_with_subject_and_background(
     assert ids[:2] == ["background", "subject"]
     assert all(not layer_id.startswith("text-") for layer_id in ids)
     assert updated["revision"] == 2
-    assert updated["current_asset_id"] == session["current_asset_id"]
+    # 拆层即产生画布快照并切换「当前作品」
+    current = next(a for a in updated["assets"] if a["id"] == updated["current_asset_id"])
+    assert current["kind"] == "snapshot"
+    assert current["id"] != session["current_asset_id"]
 
     again = await invoke(signed_in, session["id"], "split_layers")
     await run_tool({}, uuid.UUID(again["run"]["id"]))
@@ -464,6 +467,90 @@ async def test_replace_background_sends_canvas_size(
     assert len(edit_requests) == 1
     request = edit_requests[0]
     assert (request.width, request.height) == (320, 240)
+
+
+async def test_split_layers_snapshots_canvas(signed_in: httpx.AsyncClient):
+    """拆层后「当前作品」切换为画布拍平快照，document 仍是多层结构。"""
+    session = await open_session(signed_in, image=scene())
+    updated = await apply(signed_in, session["id"], "split_layers")
+
+    current = next(a for a in updated["assets"] if a["id"] == updated["current_asset_id"])
+    assert current["kind"] == "snapshot"
+    assert (current["width"], current["height"]) == (320, 240)
+    assert [layer["id"] for layer in updated["document"]["layers"]][:2] == [
+        "background",
+        "subject",
+    ]
+
+
+async def test_replace_region_after_split_adopts_snapshot(signed_in: httpx.AsyncClient):
+    session = await open_session(signed_in, image=scene())
+    split = await apply(signed_in, session["id"], "split_layers")
+
+    updated = await apply(
+        signed_in,
+        session["id"],
+        "replace_region",
+        {"prompt": "把椭圆改成方形", "layer_id": "subject"},
+    )
+
+    assert updated["current_asset_id"] != split["current_asset_id"]
+    current = next(a for a in updated["assets"] if a["id"] == updated["current_asset_id"])
+    assert current["kind"] == "snapshot"
+    assert [layer["id"] for layer in updated["document"]["layers"]][:2] == [
+        "background",
+        "subject",
+    ]
+    assert updated["revision"] == split["revision"] + 1
+
+
+async def test_promote_object_adopts_snapshot(signed_in: httpx.AsyncClient):
+    session = await open_session(signed_in, image=scene())
+    selected = await select(
+        signed_in, session["id"], session["revision"], points=[{"x": 0.5, "y": 0.5}]
+    )
+    updated = await apply(
+        signed_in,
+        session["id"],
+        "promote_object_to_layer",
+        {"mask_asset_id": selected["mask"]["id"], "revision": session["revision"]},
+    )
+
+    current = next(a for a in updated["assets"] if a["id"] == updated["current_asset_id"])
+    assert current["kind"] == "snapshot"
+
+
+async def test_single_layer_replace_region_keeps_existing_behavior(
+    signed_in: httpx.AsyncClient,
+):
+    """单层路径回归：仍直接采用层图，不产生快照。"""
+    session = await open_session(signed_in)
+    updated = await apply(signed_in, session["id"], "replace_region", {"prompt": "整体调亮"})
+
+    current = next(a for a in updated["assets"] if a["id"] == updated["current_asset_id"])
+    assert current["kind"] == "generated"
+
+
+async def test_move_layer_does_not_snapshot(signed_in: httpx.AsyncClient):
+    session = await open_session(signed_in)
+    updated = await apply(signed_in, session["id"], "move_layer", {"x": 10, "y": 10})
+    assert updated["current_asset_id"] == session["current_asset_id"]
+
+
+async def test_undo_rolls_back_snapshot_current(signed_in: httpx.AsyncClient):
+    session = await open_session(signed_in, image=scene())
+    split = await apply(signed_in, session["id"], "split_layers")
+    await apply(
+        signed_in,
+        session["id"],
+        "replace_region",
+        {"prompt": "把椭圆改成方形", "layer_id": "subject"},
+    )
+
+    undone = (await signed_in.post(f"/api/sessions/{session['id']}/undo")).json()
+
+    assert undone["current_asset_id"] == split["current_asset_id"]
+    assert undone["revision"] == split["revision"]
 
 
 async def test_switching_back_after_split_restoreslayers(signed_in: httpx.AsyncClient):
