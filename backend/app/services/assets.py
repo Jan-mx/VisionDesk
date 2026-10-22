@@ -212,8 +212,22 @@ async def cleanup_object(key: str, asset_id: uuid.UUID) -> None:
         )
 
 
-def _visible(assets: list[Asset]) -> list[Asset]:
-    return [asset for asset in assets if asset.kind not in _WORKING]
+def _visible(wall: list[Asset], current_asset_id: uuid.UUID | None) -> list[Asset]:
+    """会话组可见素材，与编辑器图片墙（ImageWall）同语义：
+
+    当前作品（current_asset_id）+ wall 末位最新一张快照 + 全部常规素材；
+    mask/subject/background 与旧快照继续过滤，leftover 不经过本函数（SQL 侧全量排除）。
+    """
+    latest_snapshot_id = next(
+        (asset.id for asset in reversed(wall) if asset.kind == AssetKind.SNAPSHOT), None
+    )
+    return [
+        asset
+        for asset in wall
+        if asset.id == current_asset_id
+        or asset.id == latest_snapshot_id
+        or asset.kind not in _WORKING
+    ]
 
 
 async def library_for_user(
@@ -251,7 +265,7 @@ async def library_for_user(
 
     groups: list[tuple[EditSession | None, Asset, list[Asset]]] = []
     for record in records:
-        visible = _visible(walls.get(record.id, []))
+        visible = _visible(walls.get(record.id, []), record.current_asset_id)
         cover = covers.get(record.current_asset_id)
         if cover is None and visible:
             cover = visible[0]

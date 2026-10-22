@@ -10,7 +10,7 @@ from sqlalchemy import text
 
 from app import storage
 from app.db import SessionFactory
-from app.models import Asset
+from app.models import Asset, SessionAsset
 from app.services.images import ImageRejected, probe
 
 
@@ -533,3 +533,116 @@ async def test_library_session_groups_tie_break_by_id_ascending(signed_in: httpx
     groups = (await signed_in.get("/api/assets/library")).json()
 
     assert [group["session_id"] for group in groups] == sorted(ids, key=uuid.UUID)
+
+
+# ---- 创意库会话组展示最新画布快照（与编辑器图片墙计数对齐）----
+
+
+async def attach_to_wall(session_id: str, asset_id: str, position: int) -> None:
+    """把已有素材按 position 挂到会话墙。"""
+    async with SessionFactory() as db:
+        db.add(
+            SessionAsset(
+                session_id=uuid.UUID(session_id),
+                asset_id=uuid.UUID(asset_id),
+                position=position,
+            )
+        )
+        await db.commit()
+
+
+async def seed_wall_asset(
+    client: httpx.AsyncClient,
+    session_id: str,
+    kind: str,
+    position: int,
+    storage_suffix: str,
+) -> str:
+    """DB 直插指定 kind 的墙素材并按 position 挂到会话墙上（不走真实工具链路）。"""
+    user_id = (await client.get("/api/auth/me")).json()["id"]
+    async with SessionFactory() as db:
+        asset = Asset(
+            user_id=uuid.UUID(user_id),
+            kind=kind,
+            source="tool",
+            storage_key=f"test/{storage_suffix}/{uuid.uuid4()}",
+            image_format="PNG",
+            width=64,
+            height=64,
+            size_bytes=128,
+            has_alpha=False,
+        )
+        db.add(asset)
+        await db.flush()
+        db.add(
+            SessionAsset(
+                session_id=uuid.UUID(session_id),
+                asset_id=asset.id,
+                position=position,
+            )
+        )
+        await db.commit()
+        return str(asset.id)
+
+
+async def test_library_includes_latest_snapshot_for_session(signed_in: httpx.AsyncClient):
+    """会话墙含多张快照时，会话组仅展示 wall 末位最新一张（与编辑器图片墙一致）。"""
+    session = await open_session(signed_in, title="快照会话")
+    generated = await upload_asset(signed_in)
+    await attach_to_wall(session["id"], generated, 1)
+
+    old_snapshot = await seed_wall_asset(signed_in, session["id"], "snapshot", 2, "old")
+    await seed_wall_asset(signed_in, session["id"], "mask", 3, "mask")
+    await seed_wall_asset(signed_in, session["id"], "subject", 4, "subject")
+    latest_snapshot = await seed_wall_asset(signed_in, session["id"], "snapshot", 5, "new")
+
+    groups = (await signed_in.get("/api/assets/library")).json()
+    group = next(item for item in groups if item["session_id"] == session["id"])
+
+    ids = [asset["id"] for asset in group["assets"]]
+    kinds = {asset["id"]: asset["kind"] for asset in group["assets"]}
+    assert session["current_asset_id"] in ids
+    assert generated in ids
+    assert latest_snapshot in ids and kinds[latest_snapshot] == "snapshot"
+    assert old_snapshot not in ids
+    assert all(kind not in {"mask", "subject", "background"} for kind in kinds.values())
+
+
+async def test_library_keeps_latest_snapshot_when_current_is_original(signed_in: httpx.AsyncClient):
+    """当前作品是原图（非快照）时，会话组仍保留最新快照入口（编辑器墙同语义）。"""
+    session = await open_session(signed_in, title="切回原图")
+    await seed_wall_asset(signed_in, session["id"], "snapshot", 1, "only")
+
+    groups = (await signed_in.get("/api/assets/library")).json()
+    group = next(item for item in groups if item["session_id"] == session["id"])
+
+    ids = [asset["id"] for asset in group["assets"]]
+    assert session["current_asset_id"] in ids
+    assert any(asset["kind"] == "snapshot" for asset in group["assets"])
+
+
+async def test_library_leftover_never_leaks_snapshot(signed_in: httpx.AsyncClient):
+    """孤儿快照不属于任何会话墙，不得泄漏进「未归入会话」分组。"""
+    await upload_asset(signed_in)  # 普通孤儿素材，保证 leftover 组存在
+    user_id = (await signed_in.get("/api/auth/me")).json()["id"]
+    async with SessionFactory() as db:
+        orphan = Asset(
+            user_id=uuid.UUID(user_id),
+            kind="snapshot",
+            source="tool",
+            storage_key=f"test/orphan/{uuid.uuid4()}",
+            image_format="PNG",
+            width=64,
+            height=64,
+            size_bytes=128,
+            has_alpha=False,
+        )
+        db.add(orphan)
+        await db.commit()
+
+    groups = (await signed_in.get("/api/assets/library")).json()
+    leftover = groups[-1]
+
+    assert leftover["session_id"] is None
+    assert all(asset["kind"] != "snapshot" for asset in leftover["assets"])
+    assert str(orphan.id) not in [asset["id"] for asset in leftover["assets"]]

@@ -25,7 +25,8 @@ class AssetSource(enum.StrEnum):
     TOOL = "tool"
 
 
-# 会话内部派生 kind：创意库不展示、不参与本期清理（PRD §3、§7）
+# 会话内部派生 kind：创意库会话组仅展示最新一张快照（当前作品锚点，与编辑器图片墙一致），
+# 其余全部不在创意库展示；leftover 与单删/批删仍拒绝全部下列 kind（PRD §3、§7）
 UNMANAGEABLE_KINDS = frozenset(
     {AssetKind.MASK, AssetKind.SUBJECT, AssetKind.BACKGROUND, AssetKind.SNAPSHOT}
 )

@@ -61,11 +61,20 @@ export default function AssetCard({
           className="size-full object-contain transition-transform duration-200 group-hover:scale-[1.02]"
         />
 
-        {/* 透明底标签 */}
-        {asset.has_alpha && (
-          <span className="bg-ink/80 absolute bottom-2 left-2 rounded px-1.5 py-0.5 text-[10px] font-medium text-white shadow-xs">
-            透明底
-          </span>
+        {/* 左下角标签组：当前作品（最新画布快照锚点）+ 透明底 */}
+        {(asset.kind === 'snapshot' || asset.has_alpha) && (
+          <div className="absolute bottom-2 left-2 flex items-center gap-1">
+            {asset.kind === 'snapshot' && (
+              <span className="bg-brand rounded px-1.5 py-0.5 text-[10px] font-medium text-white shadow-xs">
+                当前作品
+              </span>
+            )}
+            {asset.has_alpha && (
+              <span className="bg-ink/80 rounded px-1.5 py-0.5 text-[10px] font-medium text-white shadow-xs">
+                透明底
+              </span>
+            )}
+          </div>
         )}
 
         {/* 多选勾选框 */}

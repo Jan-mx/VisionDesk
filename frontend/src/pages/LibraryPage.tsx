@@ -76,6 +76,13 @@ export default function LibraryPage() {
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(new Set())
   const [batchSkippedItems, setBatchSkippedItems] = useState<BatchSkippedItem[]>([])
 
+  // 快照锚点跟随会话展示，但不可勾选/单删（后端本就拒绝，前端不暴露入口）
+  const selectableAssets = useMemo(
+    () => assets.filter((a) => a.kind !== 'snapshot'),
+    [assets],
+  )
+  const selectableCount = selectableAssets.length
+
   const toggleSelectAsset = (id: string) => {
     setSelectedAssetIds((prev) => {
       const next = new Set(prev)
@@ -86,7 +93,7 @@ export default function LibraryPage() {
   }
 
   const selectAll = () => {
-    setSelectedAssetIds(new Set(assets.map((a) => a.id)))
+    setSelectedAssetIds(new Set(selectableAssets.map((a) => a.id)))
   }
 
   const unselectAll = () => {
@@ -559,10 +566,10 @@ export default function LibraryPage() {
                 </span>
                 <button
                   type="button"
-                  onClick={selectedAssetIds.size === assets.length ? unselectAll : selectAll}
+                  onClick={selectedAssetIds.size === selectableCount ? unselectAll : selectAll}
                   className="border-line text-muted hover:bg-soft hover:text-ink rounded-control border px-2.5 py-1 text-xs font-medium"
                 >
-                  {selectedAssetIds.size === assets.length ? '取消全选' : '全选'}
+                  {selectedAssetIds.size === selectableCount ? '取消全选' : '全选'}
                 </button>
                 <button
                   type="button"
@@ -638,17 +645,17 @@ export default function LibraryPage() {
               </p>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
+            <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6">
               {assets.map((asset) => (
                 <AssetCard
                   key={asset.id}
                   asset={asset}
-                  selectable={isMultiSelect}
+                  selectable={isMultiSelect && asset.kind !== 'snapshot'}
                   selected={selectedAssetIds.has(asset.id)}
                   onToggleSelect={() => toggleSelectAsset(asset.id)}
                   onSelect={() => handleOpenAssetInEditor(asset)}
                   onRename={() => openRenameAsset(asset)}
-                  onDelete={() => openDeleteAsset(asset)}
+                  onDelete={asset.kind === 'snapshot' ? undefined : () => openDeleteAsset(asset)}
                 />
               ))}
             </div>
