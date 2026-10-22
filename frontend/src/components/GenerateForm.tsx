@@ -77,7 +77,7 @@ export default function GenerateForm({
         className="border-line bg-paper shadow-card hover:shadow-hover rounded-card focus-within:border-brand/70 focus-within:ring-4 focus-within:ring-brand/10 border p-4.5 text-left transition-all"
       >
         <textarea
-          rows={3}
+          rows={4}
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
           onKeyDown={(event) => {

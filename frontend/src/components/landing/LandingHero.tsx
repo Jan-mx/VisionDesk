@@ -56,7 +56,10 @@ export default function LandingHero({
 
       <div className="relative mx-auto max-w-[1200px] px-6">
         {/* Kicker 小胶囊 */}
-        <div className="bg-paper border-line text-ink-secondary shadow-xs inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-xs font-medium">
+        <div
+          className="bg-paper border-line text-ink-secondary shadow-xs animate-rise inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-xs font-medium"
+          style={{ animationDelay: '50ms' }}
+        >
           <span className="bg-lavender text-brand grid size-5 place-items-center rounded-md text-[11px]">
             ✦
           </span>
@@ -64,7 +67,10 @@ export default function LandingHero({
         </div>
 
         {/* 54px 大标题配蜜桃橙手绘微弧 */}
-        <h1 className="text-ink mt-5 text-[32px] font-extrabold tracking-[-1.5px] sm:text-[46px] lg:text-[54px] leading-[1.25]">
+        <h1
+          className="text-ink animate-rise mt-5 text-[32px] font-extrabold tracking-[-1.5px] sm:text-[46px] lg:text-[54px] leading-[1.25]"
+          style={{ animationDelay: '140ms' }}
+        >
           让好商品，
           <span className="relative mx-1 inline-block whitespace-nowrap">
             <span className="text-brand">自带吸引力。</span>
@@ -75,19 +81,22 @@ export default function LandingHero({
           </span>
         </h1>
 
-        <p className="text-muted mx-auto mt-4 max-w-xl text-[14.5px] leading-relaxed">
+        <p
+          className="text-muted animate-rise mx-auto mt-4 max-w-xl text-[14.5px] leading-relaxed"
+          style={{ animationDelay: '220ms' }}
+        >
           从一句灵感，到一整套商品物料。<br className="hidden sm:inline" />
           你的创意，在这里自然发生。
         </p>
 
         {/* 核心中央输入卡与两侧拍立得倾斜卡片 */}
-        <div className="relative mx-auto mt-8 max-w-[1100px]">
-          {/* 左侧拍立得卡片 (植萃精华) */}
+        <div className="animate-rise relative mx-auto mt-8 max-w-[1100px]" style={{ animationDelay: '300ms' }}>
+          {/* 左侧拍立得卡片 (植萃精华) + 悬浮呼吸 */}
           <div
-            className="pointer-events-none absolute -left-2 top-2 hidden w-[130px] -rotate-[10deg] overflow-hidden rounded-[12px] border-[7px] border-b-[24px] border-white shadow-lift lg:block"
+            className="pointer-events-none absolute -left-2 top-2 hidden w-[130px] -rotate-[10deg] overflow-hidden rounded-[12px] border-[7px] border-b-[24px] border-white shadow-lift lg:block animate-float-left"
             aria-hidden
           >
-            <img src="/creative/serum.svg" alt="" className="h-[150px] w-full object-cover" />
+            <img src="/creative/serum.webp" alt="" className="h-[150px] w-full object-cover" />
           </div>
           <span className="pointer-events-none absolute top-4 left-36 hidden text-[38px] text-[#e2a46a] lg:block select-none" aria-hidden>
             ✳
@@ -101,23 +110,23 @@ export default function LandingHero({
               onSubmit={() => onStart(prompt)}
               onAttach={() => onStart(prompt)}
               submitLabel={submitLabel}
-              placeholder="描述你想要的画面，比如：一瓶植萃精华，置于自然光下，鼠尾草绿背景，清新、有质感……"
+              placeholder="描述你想要的画面，比如：一瓶植萃精华，置于柔和晨光下，象牙白展台，通透、有质感……"
               inputRef={inputRef}
             />
           </div>
 
-          {/* 右侧拍立得卡片 (轻盈跑鞋) */}
+          {/* 右侧拍立得卡片 (轻盈跑鞋) + 悬浮呼吸 */}
           <div
-            className="pointer-events-none absolute -right-2 top-8 hidden w-[130px] rotate-[9deg] overflow-hidden rounded-[12px] border-[7px] border-b-[24px] border-white shadow-lift lg:block"
+            className="pointer-events-none absolute -right-2 top-8 hidden w-[130px] rotate-[9deg] overflow-hidden rounded-[12px] border-[7px] border-b-[24px] border-white shadow-lift lg:block animate-float-right"
             aria-hidden
           >
-            <img src="/creative/sneaker.svg" alt="" className="h-[150px] w-full object-cover" />
+            <img src="/creative/sneaker.webp" alt="" className="h-[150px] w-full object-cover" />
           </div>
           <span className="pointer-events-none absolute top-28 right-36 hidden size-7 rounded-full border-4 border-[#a1d5bc] -rotate-12 lg:block" aria-hidden />
         </div>
 
         {/* 场景标签胶囊行 */}
-        <div className="mt-6 flex flex-wrap justify-center gap-2.5">
+        <div className="animate-rise mt-6 flex flex-wrap justify-center gap-2.5" style={{ animationDelay: '400ms' }}>
           {SCENARIOS.map((item) => (
             <button
               key={item.label}
@@ -134,7 +143,7 @@ export default function LandingHero({
         </div>
 
         {/* 底部轻微说明 */}
-        <p className="text-muted-light mt-5 text-xs">
+        <p className="text-muted-light animate-rise mt-5 text-xs" style={{ animationDelay: '480ms' }}>
           无需设计经验 &nbsp; · &nbsp; 从商品主图到营销海报 &nbsp; · &nbsp; 创作与编辑，一站完成
         </p>
       </div>

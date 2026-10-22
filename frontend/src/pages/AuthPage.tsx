@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, Navigate, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 
 import BrandMark from '@/components/BrandMark'
 import LandingHeader from '@/components/landing/LandingHeader'
@@ -45,18 +45,37 @@ export default function AuthPage() {
   const copy = COPY[mode]
 
   const navigate = useNavigate()
+  const location = useLocation()
   const { user, isLoading } = useCurrentUser()
   const { login, register } = useAuthActions()
   const action = mode === 'login' ? login : register
 
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
+  const [isExiting, setIsExiting] = useState(false)
 
-  if (!isLoading && user) return <Navigate to="/create" replace />
+  // 恢复由 RequireAuth 携带的原本目标路由，默认进入 /create
+  const from = (location.state as { from?: Location })?.from?.pathname || '/create'
+
+  // 未处于提交淡出中且已有登录态时直接跳转
+  if (!isLoading && user && !isExiting) return <Navigate to={from} replace />
 
   const submit = (event: React.FormEvent) => {
     event.preventDefault()
-    action.mutate({ username, password }, { onSuccess: () => navigate('/create', { replace: true }) })
+    if (isExiting) return
+
+    action.mutate(
+      { username, password },
+      {
+        onSuccess: () => {
+          setIsExiting(true)
+          // 220ms 柔和微缩放淡出后平滑进入工作台
+          window.setTimeout(() => {
+            navigate(from, { replace: true })
+          }, 220)
+        },
+      },
+    )
   }
 
   const switchMode = () => {
@@ -69,7 +88,11 @@ export default function AuthPage() {
       <LandingHeader account={null} />
 
       <main className="flex flex-1 items-center justify-center px-4 py-8 sm:px-6">
-        <div className="border-line bg-paper shadow-card grid w-full max-w-[1080px] min-h-[640px] grid-cols-1 overflow-hidden rounded-panel border lg:grid-cols-[1.1fr_1fr]">
+        <div
+          className={`border-line bg-paper shadow-card grid w-full max-w-[1080px] min-h-[640px] grid-cols-1 overflow-hidden rounded-panel border transition-all duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] lg:grid-cols-[1.1fr_1fr] ${
+            isExiting ? 'scale-[0.985] opacity-0 pointer-events-none' : 'opacity-100'
+          }`}
+        >
           {/* 左侧艺术展示栏（浅薰衣草艺术展台 + 倾斜商品卡） */}
           <div className="relative isolate hidden flex-col justify-between overflow-hidden bg-gradient-to-br from-[#eeeaff] to-[#f6f3ff] p-10 lg:flex">
             <div>
@@ -90,13 +113,13 @@ export default function AuthPage() {
                 className="shadow-lift pointer-events-none absolute bottom-4 left-6 h-[260px] w-[190px] -rotate-[10deg] overflow-hidden rounded-[12px] border-8 border-white"
                 aria-hidden
               >
-                <img src="/creative/serum.svg" alt="" className="h-full w-full object-cover" />
+                <img src="/creative/serum.webp" alt="" className="h-full w-full object-cover" />
               </div>
               <div
                 className="shadow-lift pointer-events-none absolute bottom-12 left-48 h-[250px] w-[180px] rotate-[11deg] overflow-hidden rounded-[12px] border-8 border-white"
                 aria-hidden
               >
-                <img src="/creative/tote.svg" alt="" className="h-full w-full object-cover" />
+                <img src="/creative/tote.webp" alt="" className="h-full w-full object-cover" />
               </div>
 
               <span className="pointer-events-none absolute right-8 top-4 text-4xl text-[#d4a0cb] select-none" aria-hidden>
@@ -144,13 +167,21 @@ export default function AuthPage() {
 
               <button
                 type="submit"
-                disabled={action.isPending}
-                className="bg-brand hover:bg-brand-strong rounded-control shadow-sm flex w-full items-center justify-center gap-2 py-3 text-sm font-semibold text-white transition-all disabled:opacity-50"
+                disabled={action.isPending || isExiting}
+                className={`rounded-control shadow-sm flex w-full items-center justify-center gap-2 py-3 text-sm font-semibold text-white transition-all duration-200 disabled:opacity-50 ${
+                  isExiting
+                    ? 'bg-success shadow-success/30 shadow-md scale-[1.01]'
+                    : 'bg-brand hover:bg-brand-strong'
+                }`}
               >
-                <span>{action.isPending ? '处理中…' : copy.submit}</span>
-                <svg viewBox="0 0 24 24" fill="none" className="size-4" aria-hidden>
-                  <path d="M5 12h14m-6-6 6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
+                <span>
+                  {isExiting ? '✓ 验证成功，正在进入…' : action.isPending ? '处理中…' : copy.submit}
+                </span>
+                {!isExiting && (
+                  <svg viewBox="0 0 24 24" fill="none" className="size-4" aria-hidden>
+                    <path d="M5 12h14m-6-6 6 6-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                )}
               </button>
             </form>
 

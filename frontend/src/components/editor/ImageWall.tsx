@@ -55,7 +55,7 @@ export default function ImageWall({
                   ? `当前画布 · ${KIND_LABELS[asset.kind]}`
                   : `采用这张 · ${KIND_LABELS[asset.kind]} ${asset.width}×${asset.height}`
               }
-              className={`bg-canvas group rounded-[8px] relative flex h-[64px] w-[58px] shrink-0 flex-col items-center justify-center overflow-hidden border-2 transition-all duration-150 disabled:cursor-default ${
+              className={`bg-canvas group rounded-[8px] relative flex h-[72px] w-[64px] shrink-0 flex-col items-center justify-center overflow-hidden border-2 transition-all duration-150 disabled:cursor-default ${
                 active
                   ? 'border-brand shadow-xs'
                   : 'border-line hover:border-brand/70 hover:shadow-xs active:scale-[0.97]'
@@ -65,7 +65,7 @@ export default function ImageWall({
                 src={asset.url}
                 alt=""
                 loading="lazy"
-                className="h-[44px] w-full object-contain transition-transform duration-150 group-hover:scale-[1.03]"
+                className="h-[52px] w-full object-contain transition-transform duration-150 group-hover:scale-[1.03]"
               />
               <span className="text-muted mt-0.5 block truncate px-0.5 text-center text-[10px]">
                 {active ? '当前作品' : KIND_LABELS[asset.kind]}

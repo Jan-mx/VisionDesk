@@ -178,7 +178,7 @@ function Workspace({ sessionId }: { sessionId: string }) {
           </div>
           {heldPanel && (
             <div
-              className={`shadow-panel w-[240px] shrink-0 max-[960px]:absolute max-[960px]:inset-y-0 max-[960px]:right-0 max-[960px]:z-20 ${
+              className={`shadow-panel w-[264px] shrink-0 max-[960px]:absolute max-[960px]:inset-y-0 max-[960px]:right-0 max-[960px]:z-20 ${
                 heldPanel.exiting ? 'animate-slide-out' : 'animate-slide-in'
               }`}
             >

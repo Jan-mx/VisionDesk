@@ -30,6 +30,12 @@ const RATIO_CHANNEL_HINTS: Record<string, string> = {
   '9:16': '抖音全屏竖版',
 }
 
+const RATIO_FRAMES: Record<string, string> = {
+  '1:1': 'h-[76px] w-[76px]',
+  '4:5': 'h-[86px] w-[69px]',
+  '9:16': 'h-[96px] w-[54px]',
+}
+
 export default function MarketingPage() {
   const { sessionId = '' } = useParams()
   return sessionId ? <Workspace sessionId={sessionId} /> : <Picker />
@@ -178,7 +184,7 @@ function Workspace({ sessionId }: { sessionId: string }) {
       />
 
       {/* 复现 1:1 等宽双栏布局 (A·中央创作台规范) */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 items-start">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 items-stretch">
         {/* 左栏：物料生成配置面板 */}
         <div className="border-line bg-paper rounded-card shadow-card border p-6 flex flex-col gap-6">
           {/* 步骤 01：从这张图开始 */}
@@ -357,25 +363,26 @@ function Workspace({ sessionId }: { sessionId: string }) {
             </div>
           </section>
 
-          {/* 三比例交付预览列表 */}
+          {/* 三比例交付预览列表（真实物理画幅比例呈现） */}
           <div className="border-line bg-paper rounded-card shadow-sm border p-4">
-            <div className="text-muted text-[11px] font-semibold mb-2 text-left">多尺寸交付示意</div>
-            <div className="flex items-end justify-center gap-3">
+            <div className="text-muted text-[11px] font-semibold mb-2.5 text-left">多尺寸物理画幅示意</div>
+            <div className="flex items-end justify-center gap-4 min-h-[110px] pb-1">
               {DELIVERY_RATIOS.map((ratio) => {
                 const isActive = draftRatios.includes(ratio.value)
+                const frameClass = RATIO_FRAMES[ratio.value] || 'h-[76px] w-[76px]'
                 return (
                   <div
                     key={ratio.value}
-                    className={`text-center transition-all duration-200 ${
-                      isActive ? 'opacity-100 scale-100' : 'opacity-25 scale-95'
+                    className={`flex flex-col items-center text-center transition-all duration-200 ${
+                      isActive ? 'opacity-100 scale-100' : 'opacity-30 scale-95'
                     }`}
                   >
-                    <div className="border-line size-20 overflow-hidden rounded border bg-canvas p-1 flex items-center justify-center">
+                    <div className={`border-line overflow-hidden rounded-[8px] border bg-canvas p-1 flex items-center justify-center shadow-xs ${frameClass}`}>
                       {current && (
                         <img src={current.url} alt="" className="size-full object-contain" />
                       )}
                     </div>
-                    <span className="text-muted mt-1 block text-[10.5px] font-medium">{ratio.value}</span>
+                    <span className="text-muted mt-1.5 block text-[10.5px] font-medium font-mono">{ratio.value}</span>
                   </div>
                 )
               })}

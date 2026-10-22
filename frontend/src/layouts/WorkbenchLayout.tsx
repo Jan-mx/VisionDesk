@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 
 import ToastHost from '@/components/ToastHost'
@@ -33,6 +34,7 @@ const TITLES: Record<string, string> = {
 export default function WorkbenchLayout() {
   const navigate = useNavigate()
   const location = useLocation()
+  const mainRef = useRef<HTMLElement>(null)
   const { user } = useCurrentUser()
   const { logout } = useAuthActions()
 
@@ -40,14 +42,29 @@ export default function WorkbenchLayout() {
   const currentSection = location.pathname.split('/')[1] || 'create'
   const currentTitle = TITLES[currentSection] || '工作台'
 
+  // 计算当前激活项在侧边栏的索引，驱动弹性物理胶囊滑动
+  const activeIndex = NAV_ITEMS.findIndex((item) => {
+    if (item.to === '/editor') return location.pathname.startsWith('/editor')
+    if (item.to === '/batch') {
+      return location.pathname.startsWith('/batch') || location.pathname.startsWith('/candidates')
+    }
+    if (item.to === '/marketing') return location.pathname.startsWith('/marketing')
+    return location.pathname.startsWith(item.to)
+  })
+
+  // 路由切换时，主视口平滑复位至顶部
+  useEffect(() => {
+    mainRef.current?.scrollTo({ top: 0, behavior: 'instant' })
+  }, [location.pathname])
+
   const signOut = () =>
     logout.mutate(undefined, { onSuccess: () => navigate('/', { replace: true }) })
 
   return (
     <div className="flex h-screen overflow-hidden bg-canvas">
-      {/* 84px 固定宽度精致图标侧边栏 */}
+      {/* 84px 固定宽度精致图标侧边栏（协同渐显入场） */}
       <aside
-        className="border-line bg-paper z-20 flex w-[84px] shrink-0 flex-col items-center border-r px-2 py-5"
+        className="border-line bg-paper z-20 flex w-[84px] shrink-0 flex-col items-center border-r px-2 py-5 animate-fade-in"
         aria-label="工作台导航"
       >
         <button
@@ -59,16 +76,28 @@ export default function WorkbenchLayout() {
           <img src="/creative/mark.svg" alt="智绘台" className="size-9 rounded-[11px] shadow-sm" />
         </button>
 
-        <nav className="flex w-full flex-1 flex-col gap-2">
+        <nav className="relative flex w-full flex-1 flex-col gap-2">
+          {/* 方案 3 核心：弹性物理滑动胶囊指示器 */}
+          {activeIndex !== -1 && (
+            <div
+              className="bg-brand-soft rounded-control pointer-events-none absolute left-0 w-full transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)] z-0 shadow-xs"
+              style={{
+                height: '58px',
+                transform: `translateY(${activeIndex * 66}px)`,
+              }}
+              aria-hidden
+            />
+          )}
+
           {NAV_ITEMS.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
               className={({ isActive }) =>
-                `flex min-h-[58px] w-full flex-col items-center justify-center gap-1 rounded-control text-[11px] transition-colors ${
+                `relative z-10 flex min-h-[58px] w-full flex-col items-center justify-center gap-1 rounded-control text-[11px] transition-colors ${
                   isActive
-                    ? 'bg-brand-soft text-brand font-semibold shadow-xs'
-                    : 'text-muted hover:bg-soft hover:text-brand font-medium'
+                    ? 'text-brand font-semibold'
+                    : 'text-muted hover:text-brand font-medium'
                 }`
               }
             >
@@ -104,9 +133,9 @@ export default function WorkbenchLayout() {
 
       {/* 右侧主工作区 */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-        {/* 普通页面 64px 毛玻璃吸顶面包屑顶栏 */}
+        {/* 普通页面 56px 毛玻璃吸顶面包屑顶栏（协同渐显入场） */}
         {!isEditorPage && (
-          <header className="border-line bg-paper/90 sticky top-0 z-10 flex h-16 shrink-0 items-center justify-between border-b px-8 backdrop-blur-md">
+          <header className="border-line bg-paper/90 sticky top-0 z-10 flex h-14 shrink-0 items-center justify-between border-b px-6 backdrop-blur-md animate-fade-in">
             <div className="text-muted flex items-center gap-2.5 text-[13px]">
               <span>我的工作空间</span>
               <svg viewBox="0 0 24 24" fill="none" className="size-3.5 text-faint" aria-hidden>
@@ -124,9 +153,21 @@ export default function WorkbenchLayout() {
           </header>
         )}
 
-        {/* 页面内容注入 */}
-        <main className="min-w-0 flex-1 overflow-auto">
-          <Outlet />
+        {/* 页面内容注入（平滑交叉溶解转场，确保 h-full 与 flex 链完整贯通） */}
+        <main
+          ref={mainRef}
+          className={`min-w-0 flex-1 flex flex-col ${
+            isEditorPage ? 'h-full overflow-hidden' : 'overflow-auto'
+          }`}
+        >
+          <div
+            key={location.pathname}
+            className={`animate-cross-dissolve flex flex-col flex-1 min-h-0 w-full ${
+              isEditorPage ? 'h-full overflow-hidden' : 'min-h-full'
+            }`}
+          >
+            <Outlet />
+          </div>
         </main>
       </div>
 

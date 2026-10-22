@@ -24,13 +24,13 @@ export default function CreatePage() {
     )
 
   return (
-    <div className="mx-auto max-w-[1100px] px-6 py-8 sm:px-10">
+    <div className="mx-auto max-w-[1100px] px-6 py-6 sm:px-8">
       {/* 页面主标题区 */}
-      <div className="mb-6 flex items-center justify-between gap-4">
+      <div className="mb-5 flex items-center justify-between gap-4">
         <div>
           <div className="eyebrow mb-1 text-muted-light">MAKE SOMETHING WONDERFUL</div>
-          <h1 className="text-ink text-[26px] font-bold tracking-tight">今天，让什么变得更好看？</h1>
-          <p className="text-muted mt-1 text-xs">从一个想法开始，也可以接着上次的灵感继续。</p>
+          <h1 className="text-ink text-[24px] font-bold tracking-tight sm:text-[26px]">今天，让什么变得更好看？</h1>
+          <p className="text-muted mt-0.5 text-xs">从一个想法开始，也可以接着上次的灵感继续。</p>
         </div>
         <div className="hidden items-center gap-2 sm:flex" aria-hidden>
           <i className="bg-peach border-peach-border size-5 rotate-12 rounded-md border block" />
@@ -40,8 +40,8 @@ export default function CreatePage() {
       </div>
 
       {/* 中央轻渐变创作台 */}
-      <section className="bg-gradient-to-br from-[#f5f2ff] via-[#f6f8ff] to-[#f3faf5] border-[#ebe9f5] rounded-panel shadow-xs border p-6 text-center sm:p-8">
-        <div className="border-line bg-paper text-ink-secondary shadow-xs mb-3 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium">
+      <section className="bg-gradient-to-br from-[#f5f2ff] via-[#f6f8ff] to-[#f3faf5] border-[#ebe9f5] rounded-panel shadow-xs border p-5 text-center sm:p-7">
+        <div className="border-line bg-paper text-ink-secondary shadow-xs mb-2.5 inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-medium">
           <span className="bg-lavender text-brand grid size-4.5 place-items-center rounded-md text-[10px]">
             ✦
           </span>
@@ -50,7 +50,7 @@ export default function CreatePage() {
         <h2 className="text-ink text-2xl font-extrabold tracking-tight">
           把脑海中的灵感，变成眼前的好图。
         </h2>
-        <p className="text-muted mt-1 mb-5 text-xs">一句话，开启你的下一次创作。</p>
+        <p className="text-muted mt-1 mb-4 text-xs">一句话，开启你的下一次创作。</p>
 
         <GenerateForm
           defaultPrompt={readPromptDraft()}
@@ -70,7 +70,7 @@ export default function CreatePage() {
       </section>
 
       {/* 独立虚线商品图上传条 */}
-      <section className="mt-5">
+      <section className="mt-4">
         <ImageDropzone
           onFile={(file) => upload.mutate(file, { onSuccess: (asset) => openEditor(asset.id) })}
           disabled={upload.isPending || createSession.isPending}
@@ -81,7 +81,7 @@ export default function CreatePage() {
       </section>
 
       {/* 历史素材网格 */}
-      <section className="mt-8">
+      <section className="mt-6">
         <div className="mb-4 flex items-end justify-between">
           <div>
             <h2 className="text-ink text-lg font-bold">最近的创意</h2>

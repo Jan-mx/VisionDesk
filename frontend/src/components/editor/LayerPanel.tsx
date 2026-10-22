@@ -52,7 +52,7 @@ export default function LayerPanel({
   const onlyToWall = wallOnly(session.document)
 
   return (
-    <aside className="border-line bg-paper scrollbar-slim h-full w-[240px] shrink-0 overflow-y-auto border-l">
+    <aside className="border-line bg-paper scrollbar-slim h-full w-[264px] shrink-0 overflow-y-auto border-l">
       {panel === 'adjust' && (
         <AdjustForm
           disabled={tools.busy}
