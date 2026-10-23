@@ -24,11 +24,11 @@ export function useSessions(limit = 50) {
   })
 }
 
-export function useSession(id: string | null) {
+export function useSession(id: string | null, options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: detailKey(id ?? ''),
     queryFn: () => sessionsApi.get(id as string),
-    enabled: Boolean(id),
+    enabled: Boolean(id) && (options?.enabled ?? true),
   })
 }
 

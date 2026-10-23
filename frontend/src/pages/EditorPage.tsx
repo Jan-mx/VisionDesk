@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 
 import CanvasHint from '@/components/editor/CanvasHint'
@@ -37,8 +37,35 @@ export default function EditorPage() {
 }
 
 function Workspace({ sessionId }: { sessionId: string }) {
-  const { data: session, isError } = useSession(sessionId)
+  // 创意库入口带 ?asset=（PRD FR-005 / AC-021，2026-10-23）：**先切换、后加载**——
+  // 进入即请求 switch_current（与图片墙点选同链路，含该图最近图层布局），完成前不加载
+  // 也不展示缓存的会话详情，画布首次渲染即为所点素材，不闪现旧当前图；
+  // 切换失败（素材不存在/已隐藏 404）静默忽略并按当前作品进入。
+  // 参数在切换结束后清理，刷新/回退不重复切换。
+  const location = useLocation()
+  const navigate = useNavigate()
+  const entryAssetId = useMemo(
+    () => new URLSearchParams(location.search).get('asset'),
+    [location.search],
+  )
+  const [entryResolved, setEntryResolved] = useState(entryAssetId === null)
+  const entryDone = useRef(false)
+  const { data: cachedSession, isError } = useSession(sessionId, { enabled: entryResolved })
+  const session = entryResolved ? cachedSession : undefined
   const patch = usePatchSession(sessionId)
+
+  useEffect(() => {
+    if (entryDone.current || entryResolved || !entryAssetId) return
+    entryDone.current = true
+    patch
+      .mutateAsync({ current_asset_id: entryAssetId })
+      .catch(() => undefined)
+      .finally(() => {
+        navigate(location.pathname, { replace: true })
+        setEntryResolved(true)
+      })
+  }, [entryAssetId, entryResolved, navigate, location.pathname, patch])
+
   const tools = useSessionTools(sessionId)
   const picking = useSelection(sessionId, session?.revision ?? 0)
 
@@ -60,26 +87,6 @@ function Workspace({ sessionId }: { sessionId: string }) {
     () => new Map((session?.assets ?? []).map((asset) => [asset.id, asset.url])),
     [session?.assets],
   )
-
-  // 创意库入口带 ?asset= 进入：会话就绪后切到所点素材（与图片墙点选同一 switch_current
-  // 链路，含该图最近图层布局，并留一条可撤销历史），随即清掉参数——刷新/回退不重复切换；
-  // 所点为当前作品或未知/已隐藏素材时不切换（PRD FR-005 / AC-021，2026-10-23）
-  const location = useLocation()
-  const navigate = useNavigate()
-  const entryAssetId = useMemo(
-    () => new URLSearchParams(location.search).get('asset'),
-    [location.search],
-  )
-  useEffect(() => {
-    if (!session || !entryAssetId) return
-    navigate(location.pathname, { replace: true })
-    if (
-      entryAssetId !== session.current_asset_id &&
-      session.assets.some((asset) => asset.id === entryAssetId)
-    ) {
-      patch.mutate({ current_asset_id: entryAssetId })
-    }
-  }, [session, entryAssetId, navigate, location.pathname, patch])
 
   useEffect(() => {
     if (!session) return
