@@ -1,7 +1,7 @@
 import enum
 import uuid
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import Boolean, ForeignKey, String, false
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -52,3 +52,6 @@ class Asset(UUIDBase):
     has_alpha: Mapped[bool]
     # 创意库手动命名；空值由前端回退元信息展示（PRD LIB-FR-006）
     title: Mapped[str | None] = mapped_column(String(80), default=None)
+    # 隐藏式删除标记（PRD LIB-FR-018，2026-10-23）：仅历史引用的素材从创意库与
+    # 图片墙移除，行与对象保留供撤销/重做；引用消失后由删除类操作顺带回收（LIB-FR-019）
+    library_hidden: Mapped[bool] = mapped_column(default=False, server_default=false())

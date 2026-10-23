@@ -740,10 +740,13 @@ export default function LibraryPage() {
         onClose={() => setDeletingAsset(null)}
       >
         <div className="text-muted space-y-2 text-xs leading-relaxed">
-          <p>确定要永久删除该素材吗？该操作将从所有会话图片墙中移除该素材，删除后不可恢复。</p>
+          <p>
+            确定要删除该素材吗？它将从创意库与所有会话图片墙移除；若仍被编辑历史引用，
+            将保留内部副本以支持该会话的撤销/重做，随会话删除彻底清理。
+          </p>
           {assetReferences && assetReferences.length > 0 && (
             <div className="bg-peach/50 border-peach-border text-ink rounded-control border p-3">
-              <div className="text-danger font-semibold">被以下会话引用保护，无法删除：</div>
+              <div className="text-danger font-semibold">被以下会话的画布引用，无法删除：</div>
               <ul className="mt-1 list-disc pl-4 space-y-1">
                 {assetReferences.map((ref) => (
                   <li key={ref.session_id}>
@@ -769,8 +772,8 @@ export default function LibraryPage() {
         onClose={() => setBatchConfirmOpen(false)}
       >
         <p className="text-muted text-xs leading-relaxed">
-          确定要永久删除当前分组选中的 {selectedAssetIds.size}{' '}
-          张素材吗？受保护或被引用的素材将被自动跳过并汇报原因。
+          确定要删除当前分组选中的 {selectedAssetIds.size}{' '}
+          张素材吗？被会话原图、当前图或图层引用的素材将自动跳过并汇报原因。
         </p>
       </ConfirmDialog>
 

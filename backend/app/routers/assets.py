@@ -113,7 +113,8 @@ async def rename_asset(
 ) -> AssetOut:
     """素材重命名（LIB-FR-006）：trim 后空白归一 null，超 80 码点 422。"""
     asset = await asset_service.get_for_user(session, user.id, asset_id)
-    if asset is None:
+    if asset is None or asset.library_hidden:
+        # 已隐藏素材不再暴露管理入口（LIB-FR-011/018，2026-10-23）
         raise _not_found()
     return AssetOut.of(await asset_service.rename(session, asset, payload.title))
 
@@ -122,9 +123,9 @@ async def rename_asset(
 async def delete_asset(
     asset_id: uuid.UUID, user: CurrentUser, session: SessionDep
 ) -> Response:
-    """素材单删（LIB-FR-007）：R(X) 全量引用保护 + 活动任务门禁。"""
+    """素材单删（LIB-FR-007/018）：仅历史引用转隐藏式删除，阻断引用仍 409。"""
     try:
-        key = await asset_service.delete_for_user(session, user.id, asset_id)
+        reclaimed = await asset_service.delete_for_user(session, user.id, asset_id)
     except asset_service.AssetNotFound as exc:
         raise _not_found() from exc
     except asset_service.UnsupportedAssetKind as exc:
@@ -136,7 +137,7 @@ async def delete_asset(
     except asset_service.AssetInUse as exc:
         raise _conflict(
             "asset_in_use",
-            "素材仍被会话的原图、当前图、图层或编辑历史引用，请先删除对应会话",
+            "素材仍被会话的原图、当前图或图层引用，请先删除对应会话",
             exc.references,
         ) from exc
     except ReferenceStateInvalid as exc:
@@ -144,13 +145,14 @@ async def delete_asset(
             "reference_state_invalid", "引用数据无法安全解析，请先修复数据后再删除"
         ) from exc
     # 对象清理在 DB 提交之后执行；失败仅告警（LIB-FR-017）
-    await asset_service.cleanup_object(key, asset_id)
+    for swept_id, key in reclaimed:
+        await asset_service.cleanup_object(key, swept_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{asset_id}")
 async def get_asset(asset_id: uuid.UUID, user: CurrentUser, session: SessionDep) -> AssetOut:
     asset = await asset_service.get_for_user(session, user.id, asset_id)
-    if asset is None:
+    if asset is None or asset.library_hidden:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "素材不存在")
     return AssetOut.of(asset)

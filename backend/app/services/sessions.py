@@ -286,6 +286,29 @@ async def assets_of(session: AsyncSession, record: EditSession) -> list[Asset]:
     return list(result)
 
 
+async def live_assets_of(session: AsyncSession, record: EditSession) -> list[Asset]:
+    """墙素材 ∪ 活跃状态素材（current 与当前 document 全部图层）。
+
+    隐藏式删除后素材无墙关联，但撤销/重做可使其重新成为当前图或图层；
+    详情响应必须带出这些素材（含签名 URL）供画布渲染与继续编辑
+    （LIB-FR-018，PRD §7 隐藏素材可见性，2026-10-23）。document 无法解析时
+    退化为仅墙——展示路径不因脏数据抛错，删除路径仍走 strict 校验。
+    """
+    wall = await assets_of(session, record)
+    wall_ids = {asset.id for asset in wall}
+    live = {record.current_asset_id}
+    try:
+        layers = LayerDocument.model_validate(record.document).layers
+    except ValidationError:
+        layers = []
+    live |= {layer.asset_id for layer in layers if layer.asset_id is not None}
+    missing = live - wall_ids
+    if not missing:
+        return wall
+    extra = list(await session.scalars(select(Asset).where(Asset.id.in_(missing))))
+    return wall + extra
+
+
 async def history_of(session: AsyncSession, record: EditSession) -> list[EditHistory]:
     result = await session.scalars(
         select(EditHistory)

@@ -55,7 +55,8 @@ def _deletion_error(
 
 async def _asset(session: AsyncSession, user: User, asset_id: uuid.UUID) -> Asset:
     asset = await asset_service.get_for_user(session, user.id, asset_id)
-    if asset is None:
+    # 已隐藏素材不可作为新建会话的起点（LIB-FR-011/018，2026-10-23）
+    if asset is None or asset.library_hidden:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "素材不存在")
     return asset
 
@@ -68,7 +69,8 @@ async def _load(session: AsyncSession, user: User, session_id: uuid.UUID) -> Edi
 
 
 async def _detail(session: AsyncSession, record: EditSession) -> SessionDetailOut:
-    wall = await sessions.assets_of(session, record)
+    # 墙 ∪ 活跃状态素材：撤销/重做把已隐藏素材恢复为当前图/图层时仍可渲染（LIB-FR-018）
+    wall = await sessions.live_assets_of(session, record)
     can_undo, can_redo = await sessions.undo_state(session, record)
     return SessionDetailOut.of_detail(
         record,
