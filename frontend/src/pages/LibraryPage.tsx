@@ -311,9 +311,15 @@ export default function LibraryPage() {
   }
 
   // 10. 卡片点击或「继续编辑」处理
+  // 会话组：点击非当前作品卡携带 ?asset=，编辑器加载后先显示所点素材（PRD FR-005，2026-10-23）；
+  // 当前作品卡（组 cover）不带参数——画布本就是它，且重复切换对被裁剪画布有重置画幅语义
   const handleOpenAssetInEditor = (asset: Asset) => {
     if (effectiveSelectedId && effectiveSelectedId !== 'orphan') {
-      navigate(`/editor/${effectiveSelectedId}`)
+      const target =
+        asset.id === currentGroup?.cover.id
+          ? `/editor/${effectiveSelectedId}`
+          : `/editor/${effectiveSelectedId}?asset=${asset.id}`
+      navigate(target)
     } else {
       createSession.mutate(
         { current_asset_id: asset.id },

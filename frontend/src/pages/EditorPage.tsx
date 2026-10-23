@@ -1,5 +1,5 @@
 import { useEffect, useMemo } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom'
 
 import CanvasHint from '@/components/editor/CanvasHint'
 import CanvasStage from '@/components/editor/CanvasStage'
@@ -60,6 +60,26 @@ function Workspace({ sessionId }: { sessionId: string }) {
     () => new Map((session?.assets ?? []).map((asset) => [asset.id, asset.url])),
     [session?.assets],
   )
+
+  // 创意库入口带 ?asset= 进入：会话就绪后切到所点素材（与图片墙点选同一 switch_current
+  // 链路，含该图最近图层布局，并留一条可撤销历史），随即清掉参数——刷新/回退不重复切换；
+  // 所点为当前作品或未知/已隐藏素材时不切换（PRD FR-005 / AC-021，2026-10-23）
+  const location = useLocation()
+  const navigate = useNavigate()
+  const entryAssetId = useMemo(
+    () => new URLSearchParams(location.search).get('asset'),
+    [location.search],
+  )
+  useEffect(() => {
+    if (!session || !entryAssetId) return
+    navigate(location.pathname, { replace: true })
+    if (
+      entryAssetId !== session.current_asset_id &&
+      session.assets.some((asset) => asset.id === entryAssetId)
+    ) {
+      patch.mutate({ current_asset_id: entryAssetId })
+    }
+  }, [session, entryAssetId, navigate, location.pathname, patch])
 
   useEffect(() => {
     if (!session) return
