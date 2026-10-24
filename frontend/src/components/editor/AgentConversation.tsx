@@ -16,10 +16,11 @@ const STEP_LABEL: Record<StepStatus, string> = {
   succeeded: '已完成',
   failed: '未完成',
   canceled: '已取消',
+  blocked: '已阻塞（前置失败）',
 }
 
 export default function AgentConversation({ sessionId }: { sessionId: string }) {
-  const { data: turns = [], isPending } = useTurns(sessionId)
+  const { data: turns = [], isPending, hasNextPage, isFetchingNextPage, fetchNextPage } = useTurns(sessionId)
   const end = useRef<HTMLDivElement>(null)
   const latest = turns.at(-1)
 
@@ -41,6 +42,18 @@ export default function AgentConversation({ sessionId }: { sessionId: string }) 
 
   return (
     <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-3 py-3">
+      {hasNextPage && (
+        <div className="flex justify-center pb-1">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={isFetchingNextPage}
+            onClick={() => void fetchNextPage()}
+          >
+            {isFetchingNextPage ? '加载中…' : '加载更早对话'}
+          </Button>
+        </div>
+      )}
       {turns.map((turn) => (
         <TurnBlock key={turn.id} turn={turn} sessionId={sessionId} />
       ))}

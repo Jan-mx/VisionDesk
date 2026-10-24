@@ -272,10 +272,16 @@ async def export_session(
 
 @router.get("/{session_id}/messages")
 async def list_messages(
-    session_id: uuid.UUID, user: CurrentUser, session: SessionDep
+    session_id: uuid.UUID,
+    user: CurrentUser,
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    before: uuid.UUID | None = None,
 ) -> list[TurnOut]:
+    """默认返回最近 limit 轮（正序）；before 为更早页游标。响应仍为纯数组，旧客户端兼容。"""
     record = await _load(session, user, session_id)
-    return [TurnOut.of(turn) for turn in await agent_service.turns_of(session, record)]
+    turns = await agent_service.turns_of(session, record, limit=limit, before=before)
+    return [TurnOut.of(turn) for turn in turns]
 
 
 @router.post("/{session_id}/messages", status_code=status.HTTP_201_CREATED)

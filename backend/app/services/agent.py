@@ -1,7 +1,7 @@
 import logging
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -164,11 +164,9 @@ async def cancel(session: AsyncSession, record: EditSession, turn_id: uuid.UUID)
 async def retry(session: AsyncSession, record: EditSession, turn_id: uuid.UUID) -> AgentRun:
     turn = await _get(session, record, turn_id)
     steps = _copy(turn.plan)
-    failed = next((step for step in reversed(steps) if step["status"] == plan_mod.FAILED), None)
-    if failed is None:
+    if not any(step["status"] in {plan_mod.FAILED, plan_mod.BLOCKED} for step in steps):
         raise CannotRetry
-    failed["run_id"] = None
-    failed["status"] = plan_mod.PENDING
+    plan_mod.retryable(steps)
     turn.plan = steps
     turn.status = RunStatus.RUNNING
     turn.error = None
@@ -195,14 +193,29 @@ async def continue_plan(session: AsyncSession, run: ToolRun) -> None:
     await _advance(session, turn)
 
 
-async def turns_of(session: AsyncSession, record: EditSession, limit: int = 50) -> list[AgentRun]:
+async def turns_of(
+    session: AsyncSession,
+    record: EditSession,
+    *,
+    limit: int = 50,
+    before: uuid.UUID | None = None,
+) -> list[AgentRun]:
+    """默认返回最近 limit 轮（时间正序展示）；带 before 游标时返回更早的一页。
+
+    (created_at, id) 双键排序保证同时间消息的稳定顺序，翻页无重复遗漏。
+    """
+    query = select(AgentRun).where(AgentRun.session_id == record.id)
+    if before is not None:
+        anchor = await session.scalar(
+            select(AgentRun).where(AgentRun.id == before, AgentRun.session_id == record.id)
+        )
+        if anchor is None:
+            return []
+        query = query.where(tuple_(AgentRun.created_at, AgentRun.id) < (anchor.created_at, anchor.id))
     result = await session.scalars(
-        select(AgentRun)
-        .where(AgentRun.session_id == record.id)
-        .order_by(AgentRun.created_at)
-        .limit(limit)
+        query.order_by(AgentRun.created_at.desc(), AgentRun.id.desc()).limit(limit)
     )
-    return list(result)
+    return list(reversed(list(result)))
 
 
 async def _advance(session: AsyncSession, turn: AgentRun) -> AgentRun:
@@ -233,7 +246,10 @@ async def _advance(session: AsyncSession, turn: AgentRun) -> AgentRun:
             progressed = run.status is RunStatus.SUCCEEDED
 
     turn.plan = steps
+    plan_mod.mark_blocked(steps)
     turn.status = RunStatus(plan_mod.settle(steps))
+    if turn.status is RunStatus.FAILED and not turn.error:
+        turn.error = await _first_failure(session, steps)
     waiting = any(step["status"] == plan_mod.WAITING for step in steps)
     if turn.status is RunStatus.QUEUED and waiting:
         turn.reply = turn.reply or "下一步需要确认后再执行。"
@@ -241,6 +257,17 @@ async def _advance(session: AsyncSession, turn: AgentRun) -> AgentRun:
     await session.commit()
     await session.refresh(turn)
     return turn
+
+
+async def _first_failure(session: AsyncSession, steps: list[dict]) -> str:
+    """首个失败步骤的可读原因，给整轮失败一个界面可见的解释。"""
+    for step in steps:
+        if step["status"] != plan_mod.FAILED or not step.get("run_id"):
+            continue
+        run = await session.get(ToolRun, uuid.UUID(step["run_id"]))
+        if run is not None and run.error:
+            return run.error
+    return "有步骤失败，可重试或取消"
 
 
 async def _cancel_queued_runs(session: AsyncSession, steps: list[dict]) -> None:

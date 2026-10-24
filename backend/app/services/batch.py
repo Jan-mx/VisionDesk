@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import io
+import json
 import uuid
 import zipfile
 from datetime import UTC, datetime
@@ -70,7 +71,7 @@ async def apply_op(
             EditRequest(
                 prompt=f"只替换背景，保持主体、光线和边缘不变。新背景：{parsed.prompt}",
                 image=data,
-                count=1,
+                count=parsed.count,
                 negative_prompt=parsed.negative_prompt,
                 width=meta.width,
                 height=meta.height,
@@ -235,22 +236,45 @@ async def detail(session: AsyncSession, run: ToolRun) -> BatchOut:
 async def pack(session: AsyncSession, run: ToolRun) -> PackedExport:
     if run.status is not RunStatus.SUCCEEDED:
         raise EmptyBatch
-    outputs: list[Asset] = []
-    for raw in (run.result or {}).get("items") or []:
-        for output_id in raw.get("output_ids") or []:
-            asset = await asset_service.get_for_user(session, run.user_id, uuid.UUID(output_id))
-            if asset is not None:
-                outputs.append(asset)
-    if not outputs:
-        raise EmptyBatch
 
     created_at = datetime.now(UTC)
-    archive = io.BytesIO()
-    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
-        for index, asset in enumerate(outputs, start=1):
-            data = await storage.get(asset.storage_key)
+    entries: list[dict] = []  # manifest 逐源条目：状态、错误与文件名一一对应
+    picked: list[tuple[Asset, bytes, str]] = []
+    index = 0
+    for raw in (run.result or {}).get("items") or []:
+        files: list[str] = []
+        for output_id in raw.get("output_ids") or []:
+            asset = await asset_service.get_for_user(session, run.user_id, uuid.UUID(output_id))
+            if asset is None:
+                continue
+            index += 1
             fmt = asset.image_format.upper()
             ext = {"JPEG": "jpg", "PNG": "png", "WEBP": "webp"}.get(fmt, "png")
-            zipped.writestr(f"images/{index:02d}-{asset.width}x{asset.height}.{ext}", data)
+            name = f"images/{index:02d}-{asset.width}x{asset.height}.{ext}"
+            files.append(name)
+            picked.append((asset, await storage.get(asset.storage_key), name))
+        entries.append(
+            {
+                "source_id": raw.get("source_id"),
+                "status": raw.get("status"),
+                "error": raw.get("error"),
+                "files": files,
+            }
+        )
+    if not picked:
+        raise EmptyBatch
+
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as zipped:
+        for _asset, data, name in picked:
+            zipped.writestr(name, data)
+        zipped.writestr(
+            "manifest.json",
+            json.dumps(
+                {"created_at": created_at.isoformat(), "items": entries},
+                ensure_ascii=False,
+                indent=2,
+            ),
+        )
     filename = f"批量导出-{created_at.strftime('%Y%m%d')}.zip"
     return PackedExport(data=archive.getvalue(), filename=filename)

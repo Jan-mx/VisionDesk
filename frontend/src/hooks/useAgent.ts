@@ -1,10 +1,11 @@
 import { useEffect, useRef } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
 import { agentApi } from '@/api/agent'
 import { isTerminal } from '@/api/runs'
 
 const turnsKey = (sessionId: string) => ['session', sessionId, 'messages']
+const PAGE_SIZE = 50
 
 function useRefreshTurn(sessionId: string) {
   const queryClient = useQueryClient()
@@ -17,12 +18,28 @@ function useRefreshTurn(sessionId: string) {
 
 export function useTurns(sessionId: string) {
   const queryClient = useQueryClient()
-  const query = useQuery({
+  const query = useInfiniteQuery({
     queryKey: turnsKey(sessionId),
-    queryFn: () => agentApi.turns(sessionId),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ pageParam }) => agentApi.turns(sessionId, pageParam),
+    // 每页返回正序的最近 50 条；上一页游标取当页最旧一条
+    getNextPageParam: (lastPage) => (lastPage.length < PAGE_SIZE ? undefined : lastPage[0]?.id),
+    select: (data) => {
+      const seen = new Set<string>()
+      const turns = []
+      // pages 时间序为「最新页在前」，展示按时间正序拼接，id 去重防刷新竞态
+      for (const page of [...data.pages].reverse()) {
+        for (const turn of page) {
+          if (seen.has(turn.id)) continue
+          seen.add(turn.id)
+          turns.push(turn)
+        }
+      }
+      return turns
+    },
     // 第一步 SSE 结束时下一步可能还没写进计划，整轮 running 时接着拉，避免卡片停在「等待中」
     refetchInterval: (current) =>
-      current.state.data?.at(-1)?.status === 'running' ? 800 : false,
+      current.state.data?.pages?.at(-1)?.at(-1)?.status === 'running' ? 800 : false,
   })
 
   const latest = query.data?.at(-1)?.status

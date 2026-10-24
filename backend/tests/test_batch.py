@@ -1,4 +1,5 @@
 import io
+import json
 import uuid
 import zipfile
 
@@ -109,3 +110,65 @@ async def test_batch_list_returns_recent_jobs(signed_in: httpx.AsyncClient):
 
     body = (await signed_in.get("/api/batches")).json()
     assert body[0]["run"]["id"] == run["id"]
+
+
+async def test_batch_replace_background_honors_count(
+    signed_in: httpx.AsyncClient, edit_requests: list
+):
+    """AER-FR-011 / AC-021：批量换背景忠实执行 count，每源产出指定候选数。"""
+    asset_id = await upload(signed_in, (400, 300))
+    run = await start_batch(
+        signed_in,
+        [asset_id],
+        [{"tool": "replace_background", "params": {"prompt": "纯白", "count": 4}}],
+        formats=["png"],
+    )
+    await run_tool({}, uuid.UUID(run["id"]))
+
+    body = (await signed_in.get(f"/api/batches/{run['id']}")).json()
+    assert body["run"]["status"] == "succeeded"
+    assert edit_requests[-1].count == 4
+    assert len(body["items"][0]["outputs"]) == 4
+
+
+async def test_batch_count_branches_into_followup_ops(signed_in: httpx.AsyncClient):
+    """AER-AC-022 前半：多候选后的批量操作处理所有分支。"""
+    asset_id = await upload(signed_in, (400, 300))
+    run = await start_batch(
+        signed_in,
+        [asset_id],
+        [
+            {"tool": "replace_background", "params": {"prompt": "纯白", "count": 2}},
+            {"tool": "adjust_image", "params": {"brightness": 0.2}},
+        ],
+        formats=["png"],
+    )
+    await run_tool({}, uuid.UUID(run["id"]))
+
+    body = (await signed_in.get(f"/api/batches/{run['id']}")).json()
+    assert body["run"]["status"] == "succeeded"
+    assert len(body["items"][0]["outputs"]) == 2
+
+
+async def test_batch_zip_manifest_matches_outputs(signed_in: httpx.AsyncClient):
+    """AER-AC-022 后半：zip 含 manifest，逐源列出文件与状态，与下载文件一致。"""
+    asset_id = await upload(signed_in, (400, 300))
+    run = await start_batch(
+        signed_in,
+        [asset_id],
+        [{"tool": "replace_background", "params": {"prompt": "纯白", "count": 2}}],
+        formats=["png"],
+    )
+    await run_tool({}, uuid.UUID(run["id"]))
+
+    packed = await signed_in.get(f"/api/batches/{run['id']}/export")
+    assert packed.status_code == 200
+    archive = zipfile.ZipFile(io.BytesIO(packed.content))
+    names = [name for name in archive.namelist() if name.startswith("images/")]
+    assert len(names) == 2
+    assert "manifest.json" in archive.namelist()
+
+    manifest = json.loads(archive.read("manifest.json"))
+    assert manifest["items"][0]["status"] == "succeeded"
+    assert manifest["items"][0]["source_id"] == asset_id
+    assert manifest["items"][0]["files"] == names

@@ -270,13 +270,30 @@ function Pipeline({
             </label>
 
             {on && step.id === 'replace_background' && (
-              <div className="mt-2.5 pt-2 border-t border-brand/20">
+              <div className="mt-2.5 space-y-2 border-t border-brand/20 pt-2">
                 <input
                   value={draft.prompt}
                   onChange={(event) => onChange({ ...draft, prompt: event.target.value })}
                   placeholder="例如：浅木色桌面，晨光，自然质感"
                   className="border-line bg-paper text-ink rounded-control w-full border px-3 py-1.5 text-xs outline-none"
                 />
+                <div className="flex items-center gap-1.5">
+                  <span className="text-muted text-[11px]">每张候选：</span>
+                  {[1, 2, 3, 4].map((count) => (
+                    <button
+                      key={count}
+                      type="button"
+                      onClick={() => onChange({ ...draft, count })}
+                      className={`rounded-control px-2.5 py-1 text-xs font-medium ${
+                        draft.count === count
+                          ? 'bg-brand text-white font-semibold'
+                          : 'border-line text-muted border bg-paper'
+                      }`}
+                    >
+                      {count}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
 

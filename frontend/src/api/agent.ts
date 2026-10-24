@@ -9,6 +9,7 @@ export type StepStatus =
   | 'succeeded'
   | 'failed'
   | 'canceled'
+  | 'blocked'
 
 export type PlanStep = {
   id: string
@@ -31,7 +32,8 @@ export type Turn = {
 }
 
 export const agentApi = {
-  turns: (sessionId: string) => api.get<Turn[]>(`/sessions/${sessionId}/messages`),
+  turns: (sessionId: string, before?: string) =>
+    api.get<Turn[]>(`/sessions/${sessionId}/messages${before ? `?before=${before}` : ''}`),
   send: (sessionId: string, text: string) =>
     api.post<Turn>(`/sessions/${sessionId}/messages`, { text }),
   confirm: (sessionId: string, turnId: string) =>

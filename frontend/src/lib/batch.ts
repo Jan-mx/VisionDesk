@@ -27,6 +27,7 @@ export const EXPAND_RATIOS: Ratio[] = ['1:1', '4:5', '9:16', '16:9']
 export type BatchDraft = {
   selected: BatchTool[]
   prompt: string
+  count: number
   brightness: number
   contrast: number
   saturation: number
@@ -39,6 +40,7 @@ export type BatchDraft = {
 export const EMPTY_DRAFT: BatchDraft = {
   selected: ['remove_background'],
   prompt: '',
+  count: 1,
   brightness: 0,
   contrast: 0,
   saturation: 0,
@@ -50,7 +52,9 @@ export const EMPTY_DRAFT: BatchDraft = {
 
 export function operationsOf(draft: BatchDraft): BatchOp[] {
   return draft.selected.map((tool) => {
-    if (tool === 'replace_background') return { tool, params: { prompt: draft.prompt.trim() } }
+    if (tool === 'replace_background') {
+      return { tool, params: { prompt: draft.prompt.trim(), count: draft.count } }
+    }
     if (tool === 'adjust_image') {
       return {
         tool,

@@ -10,9 +10,12 @@ RUNNING = "running"
 SUCCEEDED = "succeeded"
 FAILED = "failed"
 CANCELED = "canceled"
+# 上游失败/取消导致的不可执行；与用户主动取消区分，不得互相伪装
+BLOCKED = "blocked"
 
 _OPEN = {PENDING, WAITING, QUEUED, RUNNING}
-_BLOCKED = {FAILED, CANCELED}
+# 使依赖步骤无法继续的状态：失败、取消、以及被它们连坐的 blocked（自身可传递）
+_BLOCKED = {FAILED, CANCELED, BLOCKED}
 
 
 class PlanError(Exception):
@@ -83,6 +86,30 @@ def settle(steps: list[dict]) -> str:
 
 def needs_confirm(steps: list[dict]) -> bool:
     return len(steps) > 1
+
+
+def mark_blocked(steps: list[dict]) -> list[dict]:
+    """上游失败/取消后，把不可能再执行的等待步骤标为 blocked，并沿依赖链传播。"""
+    by_id = {step["id"]: step for step in steps}
+    changed = True
+    while changed:
+        changed = False
+        for step in steps:
+            if step["status"] not in {PENDING, WAITING}:
+                continue
+            if any(by_id[dep]["status"] in _BLOCKED for dep in step["depends_on"]):
+                step["status"] = BLOCKED
+                changed = True
+    return steps
+
+
+def retryable(steps: list[dict]) -> list[dict]:
+    """重试复位：失败与被阻塞的步骤回到待执行；已成功步骤保留，不重复执行。"""
+    for step in steps:
+        if step["status"] in {FAILED, BLOCKED}:
+            step["run_id"] = None
+            step["status"] = PENDING
+    return steps
 
 
 def cancel_remaining(steps: list[dict]) -> list[dict]:
