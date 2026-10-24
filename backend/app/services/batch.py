@@ -170,11 +170,36 @@ def _blank_items(asset_ids: list[str]) -> list[dict]:
     ]
 
 
+async def _session_domain_deduped(session: AsyncSession, run: ToolRun, payload: BatchIn) -> list:
+    """会话内批量执行前兜底（AER-AC-023）：按真实 ID 去重并校验会话域。
+
+    聊天路径的目标在规划期已钉定，但恢复的持久计划或陈旧客户端可能带出
+    域外/重复 ID——这里是登记执行后的最后防线，独立批量页（无会话）不受影响。
+    """
+    if run.session_id is None:
+        return list(dict.fromkeys(payload.asset_ids))
+    from app.models import EditSession
+
+    record = await session.get(EditSession, run.session_id)
+    if record is None:
+        raise ToolError("所属会话已不存在")
+    unique = list(dict.fromkeys(payload.asset_ids))
+    wall_ids = {
+        str(asset.id)
+        for asset in await asset_service.processable_wall_assets(session, record)
+    }
+    for asset_id in unique:
+        if str(asset_id) not in wall_ids:
+            raise ToolError("批量目标里有素材不在当前会话的图片墙内，请在当前会话重新选择")
+    return unique
+
+
 async def execute(session: AsyncSession, run: ToolRun) -> dict:
     payload = BatchIn.model_validate(run.params)
     if not payload.asset_ids:
         # UI 直发必有 id 列表；聊天路径由服务端解析——都不该以空目标执行
         raise ToolError("批量任务没有可处理的目标")
+    payload.asset_ids = await _session_domain_deduped(session, run, payload)
     items = _blank_items([str(asset_id) for asset_id in payload.asset_ids])
     total = len(items)
     await runs.report(session, run, 8, "准备批量任务", {"items": copy.deepcopy(items)})

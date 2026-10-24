@@ -338,6 +338,99 @@ async def test_batch_rejects_cross_session_targets(
     assert "当前会话" in turn["reply"] or "重新选择" in turn["reply"]
 
 
+async def test_batch_model_returned_ids_validated_against_session(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """AC-023：模型直接带出的 asset_ids（含别会话 ID）也必须过会话域校验，
+    拒绝发生在任务登记前——零工具执行、零图像调用。"""
+    session_a = await open_session(signed_in, image=poster_image((300, 300), (0, 90, 200)))
+    foreign = session_a["current_asset_id"]
+    session_b = await open_session(signed_in, image=poster_image((280, 220), (200, 30, 30)))
+
+    fake_planner(
+        tool_calls(
+            (
+                "batch_process",
+                {
+                    "asset_ids": [foreign],
+                    "operations": [{"tool": "adjust_image", "params": {"brightness": 0.2}}],
+                },
+            ),
+        )
+    )
+    turn = await send(signed_in, session_b["id"], "把这些图都调亮")
+    # 计划整体放弃：不登记任何批量任务
+    assert turn["steps"] == []
+    assert "当前会话" in turn["reply"] or "重新" in turn["reply"]
+    from app.models import ToolRun as TR
+    from sqlalchemy import select as _select
+    from app.db import SessionFactory as _SF
+
+    async with _SF() as db:
+        runs_in_b = (
+            await db.scalars(
+                _select(TR).where(TR.session_id == uuid.UUID(session_b["id"]), TR.tool == "batch_process")
+            )
+        ).all()
+        assert runs_in_b == []
+
+
+async def test_batch_model_returned_ids_deduped_and_in_session(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """AC-024：模型把同一 ID 重复两次 → 按真实 ID 去重，只执行一次、不放大产物。"""
+    session = await open_session(signed_in, image=poster_image((320, 240), (10, 10, 10)))
+    own = session["current_asset_id"]
+
+    fake_planner(
+        tool_calls(
+            (
+                "batch_process",
+                {
+                    "asset_ids": [own, own],
+                    "operations": [{"tool": "replace_background", "params": {"prompt": "纯白", "count": 4}}],
+                    "formats": ["png"],
+                },
+            ),
+        )
+    )
+    turn = await send(signed_in, session["id"], "给这些图换背景")
+    assert turn["status"] == "running", turn.get("error") or turn["reply"]
+    turn = await settle(signed_in, session["id"])
+    assert turn["status"] == "succeeded", turn.get("error")
+
+    from app.models import ToolRun
+
+    async with SessionFactory() as db:
+        run = await db.get(ToolRun, uuid.UUID(turn["steps"][0]["run_id"]))
+        assert run.params["asset_ids"] == [own]  # 去重后单源
+
+
+async def test_batch_model_returned_ids_mixed_foreign_rejected(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """AC-023：模型带出混合集合（本会话 + 别会话）→ 整体拒绝。"""
+    session_a = await open_session(signed_in, image=poster_image((300, 300), (0, 90, 200)))
+    foreign = session_a["current_asset_id"]
+    session_b = await open_session(signed_in, image=poster_image((280, 220), (200, 30, 30)))
+    own = session_b["current_asset_id"]
+
+    fake_planner(
+        tool_calls(
+            (
+                "batch_process",
+                {
+                    "asset_ids": [own, foreign],
+                    "operations": [{"tool": "adjust_image", "params": {"brightness": 0.2}}],
+                },
+            ),
+        )
+    )
+    turn = await send(signed_in, session_b["id"], "处理这些")
+    assert turn["steps"] == []
+    assert "当前会话" in turn["reply"] or "重新" in turn["reply"]
+
+
 async def test_batch_mixed_targets_reject_if_any_foreign(
     signed_in: httpx.AsyncClient, fake_planner
 ):

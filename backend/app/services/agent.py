@@ -116,25 +116,8 @@ async def _recent_history(session: AsyncSession, record: EditSession) -> list[st
 
 
 async def processable_wall_assets(session: AsyncSession, record: EditSession) -> list:
-    """会话当前可见、可交给批量处理的常规素材：排除内部遮罩、拆层件、快照与隐藏素材，按墙序去重。"""
-    from app.models.asset import AssetKind
-
-    wall = await sessions.assets_of(session, record)
-    seen: set = set()
-    result = []
-    for asset in wall:
-        if asset.library_hidden or asset.kind not in (
-            AssetKind.ORIGINAL,
-            AssetKind.GENERATED,
-            AssetKind.MARKETING,
-            AssetKind.EXPORT,
-        ):
-            continue
-        if asset.id in seen:
-            continue
-        seen.add(asset.id)
-        result.append(asset)
-    return result
+    """会话当前可见、可交给批量处理的常规素材（会话域合法集合，与批量执行兜底共用）。"""
+    return await assets.processable_wall_assets(session, record)
 
 
 def _layer_name(layer: Layer) -> str:
@@ -226,18 +209,22 @@ async def _pin_batch_targets(
     steps: list[dict],
     context: ChatContextIn | None,
 ) -> tuple[list[dict], str | None]:
-    """把聊天批量步骤的素材目标钉成真实 asset_ids（AER-FR-009）。
+    """把聊天批量步骤的素材目标钉成真实 asset_ids（AER-FR-009 / AC-023）。
 
-    显式选择集合优先；否则 assets="wall" 解析为会话可见可处理常规素材。
-    目标为空、越权或超上限时返回可读错误并放弃本轮计划，不静默截断。
+    所有入口统一过会话域校验：显式选择集合、assets="wall" 哨兵，以及模型
+    直接带出的 asset_ids（agent_hidden 只是 schema 可见性，不是信任边界）。
+    域外 ID（别会话/隐藏/内部/已删除）整体拒绝并放弃计划——拒绝发生在任务
+    登记与图像调用之前；按真实 ID 去重后计数（AC-024）。
     """
     from app.schemas.batch import MAX_BATCH_ASSETS
 
     error: str | None = None
     for step in steps:
-        if step["tool"] != "batch_process" or step["params"].get("asset_ids"):
+        if step["tool"] != "batch_process":
             continue
         explicit = list(context.selected_asset_ids) if context else []
+        if not explicit and step["params"].get("asset_ids"):
+            explicit = list(step["params"]["asset_ids"])
         if explicit:
             resolved, error = await _validate_batch_targets(session, record, explicit)
         elif step["params"].get("assets") == "wall":
@@ -276,9 +263,9 @@ async def _validate_batch_targets(
     unique = list(dict.fromkeys(asset_ids))
     if len(unique) > MAX_BATCH_ASSETS:
         return [], f"一次最多批量处理 {MAX_BATCH_ASSETS} 张图，请缩小选择范围"
-    wall_ids = {asset.id for asset in await processable_wall_assets(session, record)}
+    wall_ids = {str(asset.id) for asset in await processable_wall_assets(session, record)}
     for asset_id in unique:
-        if asset_id not in wall_ids:
+        if str(asset_id) not in wall_ids:
             return [], "选择中有素材不在当前会话的图片墙里，请在当前会话重新勾选"
     return unique, None
 

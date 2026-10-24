@@ -387,3 +387,32 @@ async def library_for_user(
     if leftover:
         groups.append((None, leftover[0], leftover))
     return groups
+
+
+# 会话墙上可批量处理的常规素材种类；排除内部遮罩、拆层件与画布快照
+_PROCESSABLE_KINDS = {"original", "generated", "marketing", "export"}
+
+
+async def processable_wall_assets(session: AsyncSession, record: EditSession) -> list[Asset]:
+    """会话当前可见、可交给批量处理的常规素材（按墙序去重）。
+
+    聊天批量目标与执行期兜底校验共用的会话域合法集合（AER-AC-023）。
+    """
+    from app.services import sessions as session_service
+
+    wall = await session_service.assets_of(session, record)
+    seen: set = set()
+    result = []
+    for asset in wall:
+        if asset.library_hidden or asset.kind not in (
+            AssetKind.ORIGINAL,
+            AssetKind.GENERATED,
+            AssetKind.MARKETING,
+            AssetKind.EXPORT,
+        ):
+            continue
+        if asset.id in seen:
+            continue
+        seen.add(asset.id)
+        result.append(asset)
+    return result
