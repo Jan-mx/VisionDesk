@@ -23,6 +23,7 @@ from app.services import assets as asset_service
 from app.services import background, runs
 from app.services.exports import PackedExport
 from app.services.images import probe
+from app.tools.context import ToolError
 from app.tools.enhance import ExpandCanvasIn, ReplaceBackgroundIn, UpscaleImageIn
 from app.tools.marketing import PrepareDeliverySizesIn
 from app.tools.retouch import AdjustIn
@@ -140,6 +141,9 @@ def _blank_items(asset_ids: list[str]) -> list[dict]:
 
 async def execute(session: AsyncSession, run: ToolRun) -> dict:
     payload = BatchIn.model_validate(run.params)
+    if not payload.asset_ids:
+        # UI 直发必有 id 列表；聊天路径由服务端解析——都不该以空目标执行
+        raise ToolError("批量任务没有可处理的目标")
     items = _blank_items([str(asset_id) for asset_id in payload.asset_ids])
     total = len(items)
     await runs.report(session, run, 8, "准备批量任务", {"items": copy.deepcopy(items)})

@@ -60,6 +60,21 @@ function Conversation({ sessionId }: { sessionId: string }) {
   const send = useSendMessage(sessionId)
   const { data: turns = [] } = useTurns(sessionId)
   const planActive = turns.some((turn) => turn.status === 'queued' || turn.status === 'running')
+  const selectedLayerId = useEditorUi((s) => s.selectedLayerId)
+  const wallSelectedIds = useEditorUi((s) => s.wallSelectedIds)
+  const clearWallSelection = useEditorUi((s) => s.clearWallSelection)
+
+  // 选择意图随消息提交；素材归属与可见性由服务端按会话重建校验
+  const sendMessage = (text: string) => {
+    send.mutate({
+      text,
+      context: {
+        selected_layer_id: selectedLayerId,
+        selected_asset_ids: wallSelectedIds.length > 0 ? wallSelectedIds : undefined,
+      },
+    })
+    if (wallSelectedIds.length > 0) clearWallSelection()
+  }
 
   return (
     <>
@@ -72,7 +87,7 @@ function Conversation({ sessionId }: { sessionId: string }) {
             ? '当前计划进行中，确认、取消或等它结束后再发'
             : '说明要怎么改，例如：去背景再水平翻转。回车发送'
         }
-        onSend={(text) => send.mutate(text)}
+        onSend={sendMessage}
       />
     </>
   )

@@ -289,7 +289,7 @@ async def send_message(
     session_id: uuid.UUID, payload: MessageIn, user: CurrentUser, session: SessionDep
 ) -> TurnOut:
     record = await _load(session, user, session_id)
-    return TurnOut.of(await agent_service.respond(session, record, payload.text))
+    return TurnOut.of(await agent_service.respond(session, record, payload.text, payload.context))
 
 
 @router.post("/{session_id}/messages/{turn_id}/confirm")

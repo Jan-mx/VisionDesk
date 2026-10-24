@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 
-import { agentApi } from '@/api/agent'
+import { agentApi, type ChatContext } from '@/api/agent'
 import { isTerminal } from '@/api/runs'
 
 const turnsKey = (sessionId: string) => ['session', sessionId, 'messages']
@@ -62,7 +62,8 @@ export function useTurns(sessionId: string) {
 export function useSendMessage(sessionId: string) {
   const refresh = useRefreshTurn(sessionId)
   return useMutation({
-    mutationFn: (text: string) => agentApi.send(sessionId, text),
+    mutationFn: (input: { text: string; context?: ChatContext }) =>
+      agentApi.send(sessionId, input.text, input.context),
     onSuccess: refresh,
   })
 }

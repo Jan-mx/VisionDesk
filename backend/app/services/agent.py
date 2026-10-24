@@ -7,9 +7,10 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from app import agent
 from app.agent import plan as plan_mod
-from app.layers import Layer, LayerDocument, LayerKind
+from app.layers import Layer, LayerDocument, LayerKind, LayerMissing, resolve_layer
 from app.models import AgentRun, EditSession, ToolRun
 from app.models.tool_run import RunStatus
+from app.schemas.agent import ChatContextIn
 from app.services import assets, runs, selections, sessions, tools
 from app.tools import spec_of
 
@@ -32,8 +33,15 @@ class CannotRetry(Exception):
     pass
 
 
-async def describe(session: AsyncSession, record: EditSession) -> str:
-    """给规划模型的画布摘要，只给决策必需的事实。"""
+HISTORY_TURNS = 8
+# 墙上可被批量处理的常规素材种类；排除内部遮罩、拆层件与画布快照
+_PROCESSABLE_KINDS = {"original", "generated", "marketing", "export"}
+
+
+async def describe(
+    session: AsyncSession, record: EditSession, context: ChatContextIn | None = None
+) -> str:
+    """给规划模型的画布摘要：当前画布事实、选中图层、有界历史与可处理素材（AER-FR-002/008/009）。"""
     document = LayerDocument.model_validate(record.document)
     names = [_layer_name(layer) for layer in document.layers]
     parts = [
@@ -47,14 +55,78 @@ async def describe(session: AsyncSession, record: EditSession) -> str:
     if current is not None:
         parts.append(f"当前图 {current.image_format}{'，含透明通道' if current.has_alpha else ''}")
 
-    selected = await selections.get(record.id, record.revision)
-    if selected:
-        markers = selected.get("markers") or []
+    if context is not None and context.selected_layer_id:
+        try:
+            selected = resolve_layer(document, context.selected_layer_id)
+        except LayerMissing:
+            selected = None  # 客户端选择过期：不进入摘要，规划按默认目标
+        if selected is not None:
+            parts.append(f"当前选中图层：{selected.id}（{_layer_name(selected)}）")
+
+    history = await _recent_history(session, record)
+    if history:
+        parts.append(f"最近对话（旧→新）：{'；'.join(history)}")
+
+    wall = await processable_wall_assets(session, record)
+    if wall:
+        kinds: dict[str, int] = {}
+        for asset in wall:
+            kinds[asset.kind.value] = kinds.get(asset.kind.value, 0) + 1
+        summary = "、".join(f"{kind}{count} 张" for kind, count in kinds.items())
+        parts.append(
+            f"图片墙可处理素材 {len(wall)} 张（{summary}）；"
+            '对这些图批量处理时用 batch_process 并填 assets="wall"，不要猜素材 ID'
+        )
+
+    selected_mask = await selections.get(record.id, record.revision)
+    if selected_mask:
+        markers = selected_mask.get("markers") or []
         where = f"已有选区，{len(markers)} 个标点" if markers else "已有笔刷选区"
         parts.append(f"{where}（选区只限定区域，不限定图层；与 layer_id 同时给出时取交集）")
     else:
         parts.append("当前无选区，区域工具会作用在整个图层")
     return "；".join(parts)
+
+
+async def _recent_history(session: AsyncSession, record: EditSession) -> list[str]:
+    """最近 ≤8 轮已落库对话的有界摘要：目标、结果引用与终态，不含全部正文。"""
+    result = await session.execute(
+        select(AgentRun.goal, AgentRun.status)
+        .where(AgentRun.session_id == record.id)
+        .order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
+        .limit(HISTORY_TURNS)
+    )
+    lines = []
+    for goal, status in reversed(result.all()):
+        outcome = {
+            RunStatus.SUCCEEDED: "已完成",
+            RunStatus.FAILED: "失败",
+            RunStatus.CANCELED: "已取消",
+        }.get(status, "进行中")
+        lines.append(f"用户「{goal[:60]}」→{outcome}")
+    return lines
+
+
+async def processable_wall_assets(session: AsyncSession, record: EditSession) -> list:
+    """会话当前可见、可交给批量处理的常规素材：排除内部遮罩、拆层件、快照与隐藏素材，按墙序去重。"""
+    from app.models.asset import AssetKind
+
+    wall = await sessions.assets_of(session, record)
+    seen: set = set()
+    result = []
+    for asset in wall:
+        if asset.library_hidden or asset.kind not in (
+            AssetKind.ORIGINAL,
+            AssetKind.GENERATED,
+            AssetKind.MARKETING,
+            AssetKind.EXPORT,
+        ):
+            continue
+        if asset.id in seen:
+            continue
+        seen.add(asset.id)
+        result.append(asset)
+    return result
 
 
 def _layer_name(layer: Layer) -> str:
@@ -63,14 +135,22 @@ def _layer_name(layer: Layer) -> str:
     return name if layer.visible else f"{name}·隐藏"
 
 
-async def respond(session: AsyncSession, record: EditSession, goal: str) -> AgentRun:
+async def respond(
+    session: AsyncSession,
+    record: EditSession,
+    goal: str,
+    context: ChatContextIn | None = None,
+) -> AgentRun:
     """规划一轮指令并落库。多步计划先停住等确认，单步直接开跑。"""
     revision = record.revision
     reply, steps, error = "", [], None
 
     try:
-        reply, steps = await agent.run(goal, await describe(session, record))
+        reply, steps = await agent.run(goal, await describe(session, record, context))
         steps = await _pin_selection(session, record, steps)
+        steps, pin_error = await _pin_batch_targets(session, record, steps, context)
+        if pin_error:
+            reply, steps = pin_error, []
     except agent.PlannerUnavailable as exc:
         error = str(exc)
     except Exception:
@@ -130,6 +210,69 @@ async def _pin_selection(
 
 def _wants_mask(tool: str) -> bool:
     return "mask_asset_id" in spec_of(tool).params.model_fields
+
+
+async def _pin_batch_targets(
+    session: AsyncSession,
+    record: EditSession,
+    steps: list[dict],
+    context: ChatContextIn | None,
+) -> tuple[list[dict], str | None]:
+    """把聊天批量步骤的素材目标钉成真实 asset_ids（AER-FR-009）。
+
+    显式选择集合优先；否则 assets="wall" 解析为会话可见可处理常规素材。
+    目标为空、越权或超上限时返回可读错误并放弃本轮计划，不静默截断。
+    """
+    from app.schemas.batch import MAX_BATCH_ASSETS
+
+    error: str | None = None
+    for step in steps:
+        if step["tool"] != "batch_process" or step["params"].get("asset_ids"):
+            continue
+        explicit = list(context.selected_asset_ids) if context else []
+        if explicit:
+            resolved, error = await _validate_batch_targets(session, record, explicit)
+        elif step["params"].get("assets") == "wall":
+            wall = await processable_wall_assets(session, record)
+            resolved = [asset.id for asset in wall]
+            if not resolved and error is None:
+                error = "图片墙上没有可批量处理的素材"
+            elif len(resolved) > MAX_BATCH_ASSETS and error is None:
+                error = (
+                    f"选中了 {len(resolved)} 张图，超过批量上限 {MAX_BATCH_ASSETS} 张，"
+                    "请缩小范围后再试"
+                )
+        else:
+            resolved = []
+            error = "批量处理需要先说明处理哪些图（在图片墙勾选，或说清范围）"
+        if error:
+            return [], error
+        step["params"] = {
+            **step["params"],
+            "asset_ids": [str(asset_id) for asset_id in resolved],
+        }
+    return steps, None
+
+
+async def _validate_batch_targets(
+    session: AsyncSession, record: EditSession, asset_ids: list
+) -> tuple[list, str | None]:
+    """显式集合逐个校验归属与可处理性（AER-AC-018：拒绝越权、隐藏与内部素材）。"""
+    from app.models.asset import AssetKind
+    from app.schemas.batch import MAX_BATCH_ASSETS
+
+    allowed = {kind for kind in AssetKind if kind.value in _PROCESSABLE_KINDS}
+    if len(asset_ids) > MAX_BATCH_ASSETS:
+        return [], f"一次最多批量处理 {MAX_BATCH_ASSETS} 张图，请缩小选择范围"
+    resolved = []
+    for asset_id in asset_ids:
+        asset = await assets.get_for_user(session, record.user_id, asset_id)
+        if asset is None:
+            return [], "选择中有素材不存在或无权访问，请刷新图片墙后重试"
+        if asset.library_hidden or asset.kind not in allowed:
+            return [], "选择中有素材不可处理（已隐藏或内部素材），请重新选择"
+        resolved.append(asset_id)
+    return resolved, None
 
 
 async def confirm(session: AsyncSession, record: EditSession, turn_id: uuid.UUID) -> AgentRun:
@@ -218,6 +361,50 @@ async def turns_of(
     return list(reversed(list(result)))
 
 
+class PlanInputError(Exception):
+    """步骤产物引用无法解析（上游缺失/多产物未指定），可直接展示给用户。"""
+
+
+async def _resolve_step_input(
+    session: AsyncSession, steps: list[dict], step: dict
+) -> dict:
+    """解析 from_previous 步骤的输入来源：最近的已成功前置步骤的指定产物（AER-FR-003）。
+
+    引用随 plan 持久化（解析结果写回 params），刷新与 Worker 重启后不依赖内存；
+    单步重试时上游已成功不重跑，直接复用其产物。
+    """
+    params = step["params"]
+    if not params.get("from_previous"):
+        return params
+    by_id = {other["id"]: other for other in steps}
+    upstream = next(
+        (
+            by_id[dep]
+            for dep in reversed(step.get("depends_on") or [])
+            if by_id[dep]["status"] == plan_mod.SUCCEEDED and by_id[dep].get("run_id")
+        ),
+        None,
+    )
+    if upstream is None:
+        raise PlanInputError("要衔接的前置步骤还没有成功结果，无法引用它的产物")
+    run = await session.get(ToolRun, uuid.UUID(upstream["run_id"]))
+    produced = ((run.result if run else None) or {}).get("asset_ids") or []
+    if not produced:
+        raise PlanInputError("前置步骤没有可用的图片产物")
+    if len(produced) > 1:
+        index = params.get("previous_index")
+        if index is None:
+            raise PlanInputError(
+                f"前置步骤产生了 {len(produced)} 张图片，请说明用第几张（previous_index）"
+            )
+        if not isinstance(index, int) or not 1 <= index <= len(produced):
+            raise PlanInputError(f"previous_index 超出范围（1 到 {len(produced)}）")
+        chosen = produced[index - 1]
+    else:
+        chosen = produced[0]
+    return {**params, "source_asset_id": chosen}
+
+
 async def _advance(session: AsyncSession, turn: AgentRun) -> AgentRun:
     steps = _copy(turn.plan)
     progressed = True
@@ -228,8 +415,16 @@ async def _advance(session: AsyncSession, turn: AgentRun) -> AgentRun:
                 step["status"] = plan_mod.WAITING
                 continue
             try:
+                params = await _resolve_step_input(session, steps, step)
+            except PlanInputError as exc:
+                # 产物引用解析失败：步骤失败并带可读原因，绝不回落画布（AER-FR-003）
+                step["status"] = plan_mod.FAILED
+                turn.error = str(exc)
+                progressed = False
+                break
+            try:
                 run = await tools.submit(
-                    session, turn.user_id, step["tool"], step["params"], turn.session_id
+                    session, turn.user_id, step["tool"], params, turn.session_id
                 )
             except sessions.SessionNotFound:
                 # 会话在推进过程中被删除：后续步骤不再登记，整轮标记失败收尾
@@ -239,6 +434,8 @@ async def _advance(session: AsyncSession, turn: AgentRun) -> AgentRun:
                 break
             step["run_id"] = str(run.id)
             step["status"] = run.status.value
+            if params is not step["params"]:
+                step["params"] = params
             turn.plan = steps
             turn.status = RunStatus.RUNNING
             _touch(turn)

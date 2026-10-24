@@ -31,6 +31,9 @@ export type Panel = 'layers' | 'adjust' | 'background' | 'expand' | 'replace' | 
 
 type EditorUi = {
   selectedLayerId: string | null
+  /** 图片墙多选模式与选中集合：批量指令的「这些图」目标（服务端解析） */
+  wallSelectMode: boolean
+  wallSelectedIds: string[]
   cropOpen: boolean
   cropRatio: CropRatio
   cropRect: CropRect | null
@@ -43,6 +46,9 @@ type EditorUi = {
   adjustPreview: Record<string, number> | null
   layerPreview: LayerPreview | null
   selectLayer: (id: string | null) => void
+  setWallSelectMode: (open: boolean) => void
+  toggleWallSelect: (assetId: string) => void
+  clearWallSelection: () => void
   openCrop: (document: LayerDocument, ratio?: CropRatio) => void
   setCropRatio: (ratio: CropRatio, document: LayerDocument) => void
   setCropRect: (rect: CropRect) => void
@@ -88,6 +94,8 @@ const withoutReplace = (panel: Panel): Panel => (panel === 'replace' ? 'layers' 
 
 export const useEditorUi = create<EditorUi>((set) => ({
   selectedLayerId: null,
+  wallSelectMode: false,
+  wallSelectedIds: [],
   cropOpen: false,
   cropRatio: 'free',
   cropRect: null,
@@ -106,6 +114,17 @@ export const useEditorUi = create<EditorUi>((set) => ({
       selectedLayerId,
       layerPreview: state.layerPreview?.id === selectedLayerId ? state.layerPreview : null,
     })),
+
+  setWallSelectMode: (wallSelectMode) => set({ wallSelectMode }),
+
+  toggleWallSelect: (assetId) =>
+    set((state) => ({
+      wallSelectedIds: state.wallSelectedIds.includes(assetId)
+        ? state.wallSelectedIds.filter((id) => id !== assetId)
+        : [...state.wallSelectedIds, assetId],
+    })),
+
+  clearWallSelection: () => set({ wallSelectedIds: [], wallSelectMode: false }),
 
   openCrop: (document, ratio = 'free') =>
     set((state) => ({

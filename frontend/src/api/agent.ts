@@ -31,11 +31,16 @@ export type Turn = {
   steps: PlanStep[]
 }
 
+export type ChatContext = {
+  selected_layer_id?: string | null
+  selected_asset_ids?: string[]
+}
+
 export const agentApi = {
   turns: (sessionId: string, before?: string) =>
     api.get<Turn[]>(`/sessions/${sessionId}/messages${before ? `?before=${before}` : ''}`),
-  send: (sessionId: string, text: string) =>
-    api.post<Turn>(`/sessions/${sessionId}/messages`, { text }),
+  send: (sessionId: string, text: string, context?: ChatContext) =>
+    api.post<Turn>(`/sessions/${sessionId}/messages`, { text, context: context ?? {} }),
   confirm: (sessionId: string, turnId: string) =>
     api.post<Turn>(`/sessions/${sessionId}/messages/${turnId}/confirm`),
   cancel: (sessionId: string, turnId: string) =>

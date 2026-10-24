@@ -1,8 +1,10 @@
 import enum
+import uuid
 
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import storage
 from app.edits.pixels import letterbox, resize_to
 from app.models.asset import AssetKind, AssetSource
 from app.models.tool_run import ToolRun
@@ -10,7 +12,7 @@ from app.providers import EditRequest, get_image_provider
 from app.ratios import DELIVERY_RATIOS, Ratio, size_of
 from app.services import assets, runs
 from app.tools.base import ToolSpec
-from app.tools.context import flatten_session, require_session
+from app.tools.context import ToolError, flatten_session, require_session
 
 
 class MarketingKind(enum.StrEnum):
@@ -46,6 +48,14 @@ class GenerateMarketingIn(BaseModel):
     caption: str | None = Field(default=None, max_length=200, description="海报文案或补充要求")
     count: int = Field(default=1, ge=1, le=4)
     ratio: Ratio = Field(default=Ratio.SQUARE, description="输出比例，默认 1:1")
+    from_previous: bool = Field(
+        default=False,
+        description="输入取上一步的产物而不是当前画布（如刚生成的海报）",
+    )
+    previous_index: int | None = Field(
+        default=None, ge=1, description="上一步产出多张时用第几张"
+    )
+    source_asset_id: str | None = None  # 服务端解析注入，不暴露给模型
 
 
 class PrepareDeliverySizesIn(BaseModel):
@@ -59,6 +69,14 @@ class PrepareDeliverySizesIn(BaseModel):
         default="自然延伸画面边缘，保持主体完整，不要裁切商品",
         max_length=500,
     )
+    from_previous: bool = Field(
+        default=False,
+        description="输入取上一步的产物而不是当前画布（如刚生成的海报）",
+    )
+    previous_index: int | None = Field(
+        default=None, ge=1, description="上一步产出多张时用第几张"
+    )
+    source_asset_id: str | None = None  # 服务端解析注入，不暴露给模型
 
 
 async def _store(
@@ -97,13 +115,24 @@ def _unique(ratios: list[Ratio]) -> list[Ratio]:
     return seen
 
 
+async def _step_source(session: AsyncSession, run: ToolRun, record) -> bytes:
+    """步骤输入：解析出 source_asset_id 就读指定素材，否则读当前画布（AER-FR-003）。"""
+    source_asset_id = run.params.get("source_asset_id")
+    if source_asset_id:
+        asset = await assets.get_for_user(session, run.user_id, uuid.UUID(source_asset_id))
+        if asset is None:
+            raise ToolError("引用的上一步产物已不存在")
+        return await storage.get(asset.storage_key)
+    return await flatten_session(session, record)
+
+
 async def generate_marketing_exec(session: AsyncSession, run: ToolRun) -> dict:
     record = await require_session(session, run)
     kind = MarketingKind(run.params["kind"])
     ratio = Ratio(run.params["ratio"])
     width, height = size_of(ratio)
     await runs.report(session, run, 15, "读取画布")
-    source = await flatten_session(session, record)
+    source = await _step_source(session, run, record)
     await runs.report(session, run, 30, "生成营销图")
     images = await get_image_provider().edit(
         EditRequest(
@@ -131,7 +160,7 @@ async def prepare_delivery_sizes_exec(session: AsyncSession, run: ToolRun) -> di
     record = await require_session(session, run)
     ratios = _unique([Ratio(value) for value in run.params["ratios"]])
     await runs.report(session, run, 20, "读取画布")
-    source = await flatten_session(session, record)
+    source = await _step_source(session, run, record)
     images: list[bytes] = []
     variants: list[dict] = []
     total = len(ratios)
@@ -151,11 +180,13 @@ GENERATE_MARKETING = ToolSpec(
         "按当前画布生成电商营销图，只进图片墙，不改当前画布。"
         "kind：product 商品主图（白底）、scene 场景氛围图、"
         "model 模特上身、poster 促销海报。caption 可填海报标题或补充要求。"
+        "用户说对刚生成的某张图（如上一张海报）继续处理时，加 from_previous=true。"
     ),
     params=GenerateMarketingIn,
     handler=generate_marketing_exec,
     queued=True,
     session_required=True,
+    agent_hidden=("source_asset_id",),
 )
 
 PREPARE_DELIVERY_SIZES = ToolSpec(
@@ -164,9 +195,12 @@ PREPARE_DELIVERY_SIZES = ToolSpec(
     description=(
         "把当前画布完整放入投放比例，不裁切、不改画面，只进图片墙。"
         "默认一次出 1:1、4:5、9:16。用户说改尺寸、出投放物料时用这个，不要用 crop_canvas。"
+        "对刚生成的图（如上一张海报）出尺寸时加 from_previous=true；"
+        "上一张产出多张时用 previous_index 指明第几张。"
     ),
     params=PrepareDeliverySizesIn,
     handler=prepare_delivery_sizes_exec,
     queued=False,
     session_required=True,
+    agent_hidden=("source_asset_id",),
 )

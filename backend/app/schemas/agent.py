@@ -11,8 +11,20 @@ from app.tools import label_of
 MAX_MESSAGE = 1000
 
 
+class ChatContextIn(BaseModel):
+    """客户端只提交选择意图；事实（归属/可见性/图层存在）由服务端重建校验。
+
+    selected_asset_ids 放宽到 100：超过批量上限的集合也要进入服务端，
+    由解析层给出可读的「缩小范围」提示，而不是 422 一刀切。
+    """
+
+    selected_layer_id: str | None = Field(default=None, max_length=100)
+    selected_asset_ids: list[uuid.UUID] = Field(default_factory=list, max_length=100)
+
+
 class MessageIn(BaseModel):
     text: Annotated[str, Field(min_length=1, max_length=MAX_MESSAGE)]
+    context: ChatContextIn | None = None
 
     @field_validator("text")
     @classmethod
