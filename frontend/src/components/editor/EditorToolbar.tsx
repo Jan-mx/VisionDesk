@@ -166,6 +166,7 @@ export default function EditorToolbar({
             >
               消除
             </Button>
+            {/* 选区模式中面板要让位画布：取消替换表单时整体收起，退出选区模式时再回落图层 */}
             <Button
               disabled={!picking.selection}
               active={ui.panel === 'replace'}
@@ -244,7 +245,7 @@ export default function EditorToolbar({
               disabled={tools.busy}
               active={ui.panel === 'background'}
               title="按描述替换背景"
-              onClick={() => ui.setPanel(ui.panel === 'background' ? null : 'background')}
+              onClick={() => ui.setPanel(ui.panel === 'background' ? 'layers' : 'background')}
             >
               换背景
             </Button>
@@ -253,7 +254,7 @@ export default function EditorToolbar({
               disabled={tools.busy}
               active={ui.panel === 'expand'}
               title="扩展画布到新比例"
-              onClick={() => ui.setPanel(ui.panel === 'expand' ? null : 'expand')}
+              onClick={() => ui.setPanel(ui.panel === 'expand' ? 'layers' : 'expand')}
             >
               扩图
             </Button>
@@ -261,7 +262,7 @@ export default function EditorToolbar({
             <Button
               active={ui.panel === 'adjust'}
               title="调整亮度、对比度和色彩"
-              onClick={() => ui.setPanel(ui.panel === 'adjust' ? null : 'adjust')}
+              onClick={() => ui.setPanel(ui.panel === 'adjust' ? 'layers' : 'adjust')}
             >
               调色
             </Button>

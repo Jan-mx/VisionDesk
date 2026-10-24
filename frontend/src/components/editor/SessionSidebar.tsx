@@ -122,7 +122,7 @@ function SessionList({ activeId }: { activeId: string }) {
           const wasActive = deletingSession.id === activeId
           setDeletingSession(null)
           if (wasActive) {
-            useEditorUi.getState().setPanel(null)
+            useEditorUi.getState().setPanel('layers')
             useEditorUi.getState().setSelection(null)
             useEditorUi.getState().closeCrop()
             useEditorUi.getState().setCompareOpen(false)

@@ -88,17 +88,24 @@ function Workspace({ sessionId }: { sessionId: string }) {
     [session?.assets],
   )
 
+  // 图层是面板常驻底座：从编辑器外进入时默认打开；会话间切换不重挂载 Workspace，
+  // 不会打扰用户手动收起的面板
+  useEffect(() => {
+    setPanel('layers')
+  }, [setPanel])
+
   useEffect(() => {
     if (!session) return
     const onKey = (event: KeyboardEvent) => {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) {
         return
       }
-      // Esc 一次只收一层，先退临时模式，都退完了才关右侧面板
+      // Esc 一次只收一层：先退临时模式，再退工具表单回图层底座，最后才收起面板
       if (event.key === 'Escape') {
         if (cropOpen) closeCrop()
         else if (compareOpen) setCompareOpen(false)
         else if (selectMode) setSelectMode(null)
+        else if (panel && panel !== 'layers') setPanel('layers')
         else if (panel) setPanel(null)
         return
       }

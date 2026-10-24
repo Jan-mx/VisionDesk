@@ -83,8 +83,8 @@ function fitCrop(document: LayerDocument, ratio: CropRatio): CropRect {
   }
 }
 
-// 局部替换依赖当轮选区，一旦离开选择模式表单就没用了，留着只会挡住画布
-const withoutReplace = (panel: Panel): Panel => (panel === 'replace' ? null : panel)
+// 局部替换依赖当轮选区，进入裁剪/对比都会退出选区，替换表单随之失效，回落图层底座
+const withoutReplace = (panel: Panel): Panel => (panel === 'replace' ? 'layers' : panel)
 
 export const useEditorUi = create<EditorUi>((set) => ({
   selectedLayerId: null,
@@ -93,7 +93,8 @@ export const useEditorUi = create<EditorUi>((set) => ({
   cropRect: null,
   compareOpen: false,
   compareAt: 0.5,
-  panel: null,
+  // 图层是右侧面板的常驻底座，进入编辑器默认打开
+  panel: 'layers',
   selectMode: null,
   selection: null,
   splitIncludeText: false,
@@ -140,7 +141,8 @@ export const useEditorUi = create<EditorUi>((set) => ({
       cropOpen: false,
       compareOpen: false,
       cropRect: selectMode ? null : state.cropRect,
-      panel: selectMode ? null : withoutReplace(state.panel),
+      // 进入选区模式面板让位画布；退出后回落图层底座（替换表单随选区失效）
+      panel: selectMode ? null : 'layers',
     })),
 
   setSelection: (selection) => set({ selection }),
