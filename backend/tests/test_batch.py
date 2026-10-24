@@ -150,6 +150,49 @@ async def test_batch_count_branches_into_followup_ops(signed_in: httpx.AsyncClie
     assert len(body["items"][0]["outputs"]) == 2
 
 
+async def test_batch_branch_budget_caps_runaway_frames(
+    signed_in: httpx.AsyncClient, edit_requests: list
+):
+    """分支预算：连乘帧数将超上限时在该操作执行前拦下，不发起指数放大的请求。"""
+    asset_id = await upload(signed_in, (400, 300))
+    run = await start_batch(
+        signed_in,
+        [asset_id],
+        [
+            {"tool": "replace_background", "params": {"prompt": "纯白", "count": 4}},
+            {"tool": "replace_background", "params": {"prompt": "浅灰", "count": 4}},
+            {"tool": "replace_background", "params": {"prompt": "米色", "count": 4}},
+        ],
+        formats=["png"],
+    )
+    await run_tool({}, uuid.UUID(run["id"]))
+
+    body = (await signed_in.get(f"/api/batches/{run['id']}")).json()
+    assert body["run"]["status"] == "failed"
+    assert "上限" in (body["run"]["error"] or "")
+    # 预算在第三个操作执行前生效：1 + 4 + 16 = 21 次编辑请求封顶，而不是 85 次
+    assert len(edit_requests) <= 21
+
+
+async def test_batch_budget_allows_legit_branch_combos(signed_in: httpx.AsyncClient):
+    """合法组合不受预算影响：4 候选 × 3 投放尺寸 = 12 帧正常完成。"""
+    asset_id = await upload(signed_in, (400, 300))
+    run = await start_batch(
+        signed_in,
+        [asset_id],
+        [
+            {"tool": "replace_background", "params": {"prompt": "纯白", "count": 4}},
+            {"tool": "prepare_delivery_sizes", "params": {}},
+        ],
+        formats=["png"],
+    )
+    await run_tool({}, uuid.UUID(run["id"]))
+
+    body = (await signed_in.get(f"/api/batches/{run['id']}")).json()
+    assert body["run"]["status"] == "succeeded"
+    assert len(body["items"][0]["outputs"]) == 12
+
+
 async def test_batch_zip_manifest_matches_outputs(signed_in: httpx.AsyncClient):
     """AER-AC-022 后半：zip 含 manifest，逐源列出文件与状态，与下载文件一致。"""
     asset_id = await upload(signed_in, (400, 300))

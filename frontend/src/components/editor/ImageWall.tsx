@@ -16,11 +16,13 @@ const KIND_LABELS: Record<AssetKind, string> = {
 export default function ImageWall({
   assets,
   currentId,
+  sessionId,
   disabled,
   onPick,
 }: {
   assets: Asset[]
   currentId: string
+  sessionId: string
   disabled: boolean
   onPick: (assetId: string) => void
 }) {
@@ -36,17 +38,19 @@ export default function ImageWall({
     )
 
   const selectMode = useEditorUi((s) => s.wallSelectMode)
-  const selectedIds = useEditorUi((s) => s.wallSelectedIds)
   const toggleSelect = useEditorUi((s) => s.toggleWallSelect)
   const setSelectMode = useEditorUi((s) => s.setWallSelectMode)
   const clearSelection = useEditorUi((s) => s.clearWallSelection)
-  // 多选模式下只勾选可批量处理的常规素材（与后端解析集合一致）
+  // 勾选与多选模式都携带会话戳：切走会话后 store 里的旧选择不再生效（E2E-F02）
+  const scopedSelectedIds = useEditorUi((s) =>
+    s.wallSelectionFor === sessionId ? s.wallSelectedIds : [],
+  )
   const selectableIds = new Set(
     visibleAssets
       .filter((asset) => ['original', 'generated', 'marketing', 'export'].includes(asset.kind))
       .map((asset) => asset.id),
   )
-  const selectedCount = selectedIds.filter((id) => selectableIds.has(id)).length
+  const selectedCount = scopedSelectedIds.filter((id) => selectableIds.has(id)).length
 
   return (
     <div className="border-line bg-paper flex h-[104px] shrink-0 items-center gap-3 border-t px-5">
@@ -64,7 +68,7 @@ export default function ImageWall({
           ) : (
             <button
               type="button"
-              onClick={() => setSelectMode(true)}
+              onClick={() => setSelectMode(true, sessionId)}
               className="text-muted hover:text-brand text-[10.5px] font-medium hover:underline"
               title="勾选多张素材后，在 AI 对话里说「这些图都…」即可批量处理"
             >
@@ -84,7 +88,7 @@ export default function ImageWall({
       <div className="scrollbar-slim flex min-w-0 flex-1 items-center gap-2.5 overflow-x-auto py-2">
         {visibleAssets.map((asset) => {
           const active = asset.id === currentId
-          const checked = selectedIds.includes(asset.id)
+          const checked = scopedSelectedIds.includes(asset.id)
           const selectable = selectableIds.has(asset.id)
           return (
             <button
@@ -92,7 +96,7 @@ export default function ImageWall({
               type="button"
               disabled={disabled || (!selectMode && active)}
               onClick={() =>
-                selectMode && selectable ? toggleSelect(asset.id) : onPick(asset.id)
+                selectMode && selectable ? toggleSelect(asset.id, sessionId) : onPick(asset.id)
               }
               title={
                 selectMode

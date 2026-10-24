@@ -37,9 +37,10 @@ export function useTurns(sessionId: string) {
       }
       return turns
     },
-    // 第一步 SSE 结束时下一步可能还没写进计划，整轮 running 时接着拉，避免卡片停在「等待中」
+    // 第一步 SSE 结束时下一步可能还没写进计划，整轮 running 时接着拉，避免卡片停在「等待中」。
+    // 最新轮在 pages[0]（fetchNextPage 只会把更早的页追加到尾部），读错页会让运行中轮询悄悄停掉
     refetchInterval: (current) =>
-      current.state.data?.pages?.at(-1)?.at(-1)?.status === 'running' ? 800 : false,
+      current.state.data?.pages?.[0]?.at(-1)?.status === 'running' ? 800 : false,
   })
 
   const latest = query.data?.at(-1)?.status

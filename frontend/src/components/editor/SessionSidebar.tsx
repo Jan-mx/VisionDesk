@@ -62,7 +62,10 @@ function Conversation({ sessionId }: { sessionId: string }) {
   const planActive = turns.some((turn) => turn.status === 'queued' || turn.status === 'running')
   const selectedLayerId = useEditorUi((s) => s.selectedLayerId)
   const wallSelectedIds = useEditorUi((s) => s.wallSelectedIds)
+  const wallSelectionFor = useEditorUi((s) => s.wallSelectionFor)
   const clearWallSelection = useEditorUi((s) => s.clearWallSelection)
+  // 勾选只在所属会话里有效：陈旧选择（理论上已被切换清理）绝不随消息发出
+  const scopedWallIds = wallSelectionFor === sessionId ? wallSelectedIds : []
 
   // 选择意图随消息提交；素材归属与可见性由服务端按会话重建校验
   const sendMessage = (text: string) => {
@@ -70,10 +73,10 @@ function Conversation({ sessionId }: { sessionId: string }) {
       text,
       context: {
         selected_layer_id: selectedLayerId,
-        selected_asset_ids: wallSelectedIds.length > 0 ? wallSelectedIds : undefined,
+        selected_asset_ids: scopedWallIds.length > 0 ? scopedWallIds : undefined,
       },
     })
-    if (wallSelectedIds.length > 0) clearWallSelection()
+    if (scopedWallIds.length > 0) clearWallSelection()
   }
 
   return (

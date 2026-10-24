@@ -251,15 +251,21 @@ async def test_batch_wall_targets_resolved_server_side(
 async def test_batch_explicit_selection_overrides_wall(
     signed_in: httpx.AsyncClient, fake_planner
 ):
-    """显式选择集合优先：selected_asset_ids 决定目标，即使模型带 wall 哨兵。"""
+    """显式选择集合优先：selected_asset_ids 决定目标（必须完全落在当前会话墙内）。"""
     session = await open_session(signed_in, image=poster_image((320, 240), (10, 10, 10)))
-    extra = (await signed_in.post(
-        "/api/assets", files={"file": ("b.png", poster_image((200, 200)), "image/png")}
+    bg = (await signed_in.post(
+        f"/api/sessions/{session['id']}/tools",
+        json={"tool": "replace_background", "params": {"prompt": "纯白", "count": 2}},
     )).json()
-    from tests.test_sessions import upload
-
-    third = await upload(signed_in, (300, 300))
-    chosen = [extra["id"], third]
+    await run_tool({}, uuid.UUID(bg["run"]["id"]))
+    wall = (await signed_in.get(f"/api/sessions/{session['id']}")).json()["assets"]
+    processable = sorted(
+        a["id"]
+        for a in wall
+        if a["kind"] in {"original", "generated", "marketing", "export"}
+    )
+    assert len(processable) >= 3  # 原图 + 两个换背景候选
+    chosen = [processable[0]]  # 只选第一张，与整墙解析可区分
 
     fake_planner(
         tool_calls(
@@ -269,7 +275,7 @@ async def test_batch_explicit_selection_overrides_wall(
     turn = await send_ctx(
         signed_in,
         session["id"],
-        "就处理选中的这几张",
+        "就处理选中的这张",
         {"context": {"selected_asset_ids": chosen}},
     )
     assert turn["status"] == "running", turn.get("error") or turn["reply"]
@@ -278,7 +284,7 @@ async def test_batch_explicit_selection_overrides_wall(
 
     async with SessionFactory() as db:
         run = await db.get(ToolRun, uuid.UUID(turn["steps"][0]["run_id"]))
-        assert sorted(run.params["asset_ids"]) == sorted(chosen)
+        assert run.params["asset_ids"] == chosen
 
 
 async def test_batch_rejects_oversized_or_empty_targets(
@@ -306,3 +312,51 @@ async def test_batch_rejects_oversized_or_empty_targets(
     )
     assert turn["steps"] == []
     assert "20" in turn["reply"]  # 上限提示
+
+
+async def test_batch_rejects_cross_session_targets(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """E2E-F02 / AC-018：显式集合含其他会话的素材 → 可读拒绝，绝不处理别会话素材。"""
+    session_a = await open_session(signed_in, image=poster_image((320, 240), (10, 10, 10)))
+    foreign = session_a["current_asset_id"]
+    session_b = await open_session(signed_in, image=poster_image((280, 220), (200, 30, 30)))
+
+    fake_planner(
+        tool_calls(
+            ("batch_process", {"assets": "wall", "operations": [{"tool": "adjust_image", "params": {"brightness": 0.2}}]}),
+        )
+    )
+    turn = await send_ctx(
+        signed_in,
+        session_b["id"],
+        "把这些图都调亮一点，亮度增加0.15。",
+        {"context": {"selected_asset_ids": [foreign]}},
+    )
+    # 计划被整体放弃：没有任何步骤被提交（也就不会处理 A 会话的素材）
+    assert turn["steps"] == []
+    assert "当前会话" in turn["reply"] or "重新选择" in turn["reply"]
+
+
+async def test_batch_mixed_targets_reject_if_any_foreign(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """混合集合（本会话 + 别会话）也整体拒绝：目标集合必须完全落在当前会话内。"""
+    session_a = await open_session(signed_in, image=poster_image((300, 300), (0, 90, 200)))
+    foreign = session_a["current_asset_id"]
+    session_b = await open_session(signed_in, image=poster_image((280, 220), (200, 30, 30)))
+    own = session_b["current_asset_id"]
+
+    fake_planner(
+        tool_calls(
+            ("batch_process", {"assets": "wall", "operations": [{"tool": "adjust_image", "params": {"brightness": 0.2}}]}),
+        )
+    )
+    turn = await send_ctx(
+        signed_in,
+        session_b["id"],
+        "把这些图都调亮",
+        {"context": {"selected_asset_ids": [own, foreign]}},
+    )
+    assert turn["steps"] == []
+    assert "当前会话" in turn["reply"] or "重新选择" in turn["reply"]

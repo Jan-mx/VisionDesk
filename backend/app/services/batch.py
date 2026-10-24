@@ -103,6 +103,25 @@ async def _store(session: AsyncSession, user_id: uuid.UUID, images: list[bytes])
     return created
 
 
+MAX_BATCH_FRAMES = 32
+
+
+def _expected_branches(operation) -> int:
+    """该操作对每帧输入的输出数上界，用于分支预算预检。"""
+    if isinstance(operation, dict):
+        tool = operation.get("tool")
+        params = operation.get("params") or {}
+    else:
+        tool = operation.tool
+        params = operation.params or {}
+    if tool == "replace_background":
+        return max(1, int(params.get("count") or 1))
+    if tool == "prepare_delivery_sizes":
+        ratios = params.get("ratios")
+        return len(set(ratios)) if ratios else 3
+    return 1
+
+
 async def process_asset(
     session: AsyncSession,
     run: ToolRun,
@@ -113,6 +132,13 @@ async def process_asset(
     data = await storage.get(source.storage_key)
     frames = [data]
     for operation_index, operation in enumerate(payload.operations):
+        # 分支预算预检：候选连乘将超上限时在该操作执行前拦下，避免指数放大的模型请求
+        expected = _expected_branches(operation)
+        if len(frames) * expected > MAX_BATCH_FRAMES:
+            raise ValueError(
+                f"批量分支产物将达到 {len(frames) * expected} 张，"
+                f"超过上限 {MAX_BATCH_FRAMES} 张，请减少候选数或操作步骤"
+            )
         next_frames: list[bytes] = []
         for frame_index, frame in enumerate(frames):
             next_frames.extend(
@@ -125,6 +151,11 @@ async def process_asset(
                 )
             )
         frames = next_frames
+        if len(frames) > MAX_BATCH_FRAMES:
+            raise ValueError(
+                f"批量分支产物已达 {len(frames)} 张，超过上限 {MAX_BATCH_FRAMES} 张，"
+                "请减少候选数或操作步骤"
+            )
     encoded: list[bytes] = []
     for frame in frames:
         for fmt in payload.formats:

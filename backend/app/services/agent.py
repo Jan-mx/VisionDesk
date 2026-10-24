@@ -257,22 +257,22 @@ async def _pin_batch_targets(
 async def _validate_batch_targets(
     session: AsyncSession, record: EditSession, asset_ids: list
 ) -> tuple[list, str | None]:
-    """显式集合逐个校验归属与可处理性（AER-AC-018：拒绝越权、隐藏与内部素材）。"""
-    from app.models.asset import AssetKind
+    """显式集合必须完全落在当前会话的可处理素材内（E2E-F02 / AER-AC-018）。
+
+    陈旧客户端可能带着其他会话的勾选发来目标；服务端以本会话墙为唯一合法域，
+    任何一个不在域内的 ID（别会话、已隐藏、内部素材、已删除）都整体拒绝并提示
+    重新选择——绝不处理别会话素材，也不静默截断。
+    """
     from app.schemas.batch import MAX_BATCH_ASSETS
 
-    allowed = {kind for kind in AssetKind if kind.value in _PROCESSABLE_KINDS}
-    if len(asset_ids) > MAX_BATCH_ASSETS:
+    unique = list(dict.fromkeys(asset_ids))
+    if len(unique) > MAX_BATCH_ASSETS:
         return [], f"一次最多批量处理 {MAX_BATCH_ASSETS} 张图，请缩小选择范围"
-    resolved = []
-    for asset_id in asset_ids:
-        asset = await assets.get_for_user(session, record.user_id, asset_id)
-        if asset is None:
-            return [], "选择中有素材不存在或无权访问，请刷新图片墙后重试"
-        if asset.library_hidden or asset.kind not in allowed:
-            return [], "选择中有素材不可处理（已隐藏或内部素材），请重新选择"
-        resolved.append(asset_id)
-    return resolved, None
+    wall_ids = {asset.id for asset in await processable_wall_assets(session, record)}
+    for asset_id in unique:
+        if asset_id not in wall_ids:
+            return [], "选择中有素材不在当前会话的图片墙里，请在当前会话重新勾选"
+    return unique, None
 
 
 async def confirm(session: AsyncSession, record: EditSession, turn_id: uuid.UUID) -> AgentRun:

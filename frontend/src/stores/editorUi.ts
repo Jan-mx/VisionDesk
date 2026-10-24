@@ -34,6 +34,8 @@ type EditorUi = {
   /** 图片墙多选模式与选中集合：批量指令的「这些图」目标（服务端解析） */
   wallSelectMode: boolean
   wallSelectedIds: string[]
+  /** 选择所属会话：切到其他会话即失效，防止把 A 的勾选发给 B（E2E-F02） */
+  wallSelectionFor: string | null
   cropOpen: boolean
   cropRatio: CropRatio
   cropRect: CropRect | null
@@ -46,8 +48,8 @@ type EditorUi = {
   adjustPreview: Record<string, number> | null
   layerPreview: LayerPreview | null
   selectLayer: (id: string | null) => void
-  setWallSelectMode: (open: boolean) => void
-  toggleWallSelect: (assetId: string) => void
+  setWallSelectMode: (open: boolean, sessionId?: string) => void
+  toggleWallSelect: (assetId: string, sessionId?: string) => void
   clearWallSelection: () => void
   openCrop: (document: LayerDocument, ratio?: CropRatio) => void
   setCropRatio: (ratio: CropRatio, document: LayerDocument) => void
@@ -96,6 +98,7 @@ export const useEditorUi = create<EditorUi>((set) => ({
   selectedLayerId: null,
   wallSelectMode: false,
   wallSelectedIds: [],
+  wallSelectionFor: null,
   cropOpen: false,
   cropRatio: 'free',
   cropRect: null,
@@ -115,16 +118,22 @@ export const useEditorUi = create<EditorUi>((set) => ({
       layerPreview: state.layerPreview?.id === selectedLayerId ? state.layerPreview : null,
     })),
 
-  setWallSelectMode: (wallSelectMode) => set({ wallSelectMode }),
-
-  toggleWallSelect: (assetId) =>
+  setWallSelectMode: (wallSelectMode, sessionId) =>
     set((state) => ({
+      wallSelectMode,
+      wallSelectionFor: wallSelectMode && sessionId ? sessionId : state.wallSelectionFor,
+    })),
+
+  toggleWallSelect: (assetId, sessionId) =>
+    set((state) => ({
+      wallSelectionFor: sessionId ?? state.wallSelectionFor,
       wallSelectedIds: state.wallSelectedIds.includes(assetId)
         ? state.wallSelectedIds.filter((id) => id !== assetId)
         : [...state.wallSelectedIds, assetId],
     })),
 
-  clearWallSelection: () => set({ wallSelectedIds: [], wallSelectMode: false }),
+  clearWallSelection: () =>
+    set({ wallSelectedIds: [], wallSelectMode: false, wallSelectionFor: null }),
 
   openCrop: (document, ratio = 'free') =>
     set((state) => ({

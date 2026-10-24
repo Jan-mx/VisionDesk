@@ -20,6 +20,11 @@ const PANEL_EXIT_MS = 200
 
 export default function EditorPage() {
   const { sessionId = '' } = useParams()
+  // 墙选择绑定会话：切到别的会话即清掉旧会话的勾选与多选模式（E2E-F02）
+  const clearWallSelection = useEditorUi((state) => state.clearWallSelection)
+  useEffect(() => {
+    clearWallSelection()
+  }, [sessionId, clearWallSelection])
 
   return (
     // 编辑器自成一屏：不让工具条或画布把外层 main 撑出滚动条，否则画布会被滚出视口
@@ -224,6 +229,7 @@ function Workspace({ sessionId }: { sessionId: string }) {
         <ImageWall
           assets={session.assets}
           currentId={session.current_asset_id}
+          sessionId={session.id}
           disabled={patch.isPending || tools.busy}
           onPick={(current_asset_id) => patch.mutate({ current_asset_id })}
         />
