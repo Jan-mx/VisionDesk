@@ -3,10 +3,13 @@
 import io
 import uuid
 
-from PIL import Image
+from PIL import Image, ImageChops
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.edits.geometry import to_layer_mask
+from app.edits.mask import apply_masked
+from app.edits.split import EmptyCut, alpha_mask
 from app.layers import Layer, LayerKind, Transform
 from app.models.asset import AssetKind, AssetSource
 from app.models.tool_run import ToolRun
@@ -47,6 +50,52 @@ def _trim_box(image: Image.Image) -> tuple[int, int, int, int] | None:
     )
 
 
+def _png(image: Image.Image) -> bytes:
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _subject_of(
+    source: Image.Image, mask: bytes | None, layer: Layer, canvas: tuple[int, int]
+) -> Image.Image:
+    """解析变体的固定主体源：点选切片或透明主体层（E2E-F01）。
+
+    有选区：选区限定到层本地作为主体 alpha 域，裁到包围盒——未拆层也能得到
+    独立主体切片。无选区：源层必须自带有效透明度（拆层主体/提升物体）；
+    完全不透明的整场景不满足主体前提，明确引导先点选或拆层，绝不复制整场景。
+    """
+    if mask is not None:
+        try:
+            local = to_layer_mask(mask, layer, canvas)
+        except EmptyCut as exc:
+            raise ToolError("选区没有覆盖到该图层") from exc
+        if local.getbbox() is None:
+            raise ToolError("选区没有覆盖到该图层")
+        subject = source.copy()
+        subject.putalpha(ImageChops.multiply(source.getchannel("A"), local))
+        box = subject.getchannel("A").getbbox()
+        if box is None:
+            raise ToolError("选区没有覆盖到该图层")
+        pad = int(0.05 * max(subject.size))
+        box = (
+            max(0, box[0] - pad),
+            max(0, box[1] - pad),
+            min(subject.width, box[2] + pad),
+            min(subject.height, box[3] + pad),
+        )
+        return subject.crop(box)
+
+    alpha = source.getchannel("A")
+    if alpha.getextrema()[0] == 255 or alpha.getbbox() is None:
+        raise ToolError(
+            "当前图层是完整场景，没有独立主体：请先用局部点选主体或拆分图层，"
+            "再生成多颜色主体"
+        )
+    trim = _trim_box(source)
+    return source.crop(trim) if trim is not None else source.copy()
+
+
 async def create_color_variants_exec(session: AsyncSession, run: ToolRun) -> dict:
     """固定源层与源字节，每个颜色独立请求同一源；禁止链式累计变形。
 
@@ -67,16 +116,10 @@ async def create_color_variants_exec(session: AsyncSession, run: ToolRun) -> dic
     await runs.report(session, run, 10, "读取主体")
     source_bytes = await layer_image(session, record, source_layer)
     source = Image.open(io.BytesIO(source_bytes)).convert("RGBA")
-    trim = _trim_box(source)
-    if trim is not None:
-        region = source.crop(trim)
-        buffer = io.BytesIO()
-        region.save(buffer, format="PNG")
-        request_image = buffer.getvalue()
-        size = region.size
-    else:
-        request_image = source_bytes
-        size = source.size
+    subject = _subject_of(source, mask, source_layer, (document.width, document.height))
+    request_image = _png(subject)
+    size = subject.size
+    subject_alpha = alpha_mask(request_image)
 
     created: list[tuple[str, object]] = []
     missing: list[str] = []
@@ -88,7 +131,7 @@ async def create_color_variants_exec(session: AsyncSession, run: ToolRun) -> dic
                 EditRequest(
                     prompt=(
                         f"把画面主体的颜色改成{color}，保持商品款式、形状、结构与细节完全不变，"
-                        "只改变颜色，背景与构图保持原样。"
+                        "只改变颜色，主体轮廓与透明背景保持原样。"
                     ),
                     image=request_image,
                     width=size[0],
@@ -99,8 +142,10 @@ async def create_color_variants_exec(session: AsyncSession, run: ToolRun) -> dic
         except ProviderError:
             missing.append(color)
             continue
+        # 模型常返回不透明画布：重应用主体 alpha，保证主体外透明（E2E-F01）
+        merged = apply_masked(request_image, images[0], subject_alpha)
         asset = await assets.create_from_bytes(
-            session, run.user_id, images[0], AssetKind.GENERATED, AssetSource.TOOL
+            session, run.user_id, merged, AssetKind.GENERATED, AssetSource.TOOL
         )
         created.append((color, asset))
 
@@ -145,7 +190,9 @@ CREATE_COLOR_VARIANTS = ToolSpec(
     label="多颜色主体",
     description=(
         "基于画布上的同一主体生成多种颜色版本，每种颜色一个独立可编辑图层，"
-        "原主体保留。用户要求「每种颜色各一个主体/各一只」时用它；"
+        "原主体保留。主体需要是独立图层（拆层主体）或已点选的物体；"
+        "未拆层且无选区时应先安排 split_layers。"
+        "用户要求「每种颜色各一个主体/各一只」时用它；"
         "不要用 generate_image 从零生成，也不要把多个颜色合成一张图。"
     ),
     params=ColorVariantsIn,

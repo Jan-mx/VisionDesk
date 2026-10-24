@@ -61,13 +61,19 @@ def union(left: Image.Image, right: Image.Image) -> Image.Image:
 
 
 def apply_masked(source: bytes, edited: bytes, mask: bytes) -> bytes:
-    """只把选区内的像素换成编辑结果，选区外保持原图。"""
+    """只把选区内的像素换成编辑结果，选区外保持原图。
+
+    羽化只允许发生在原遮罩非零域内（E2E-F05）：高斯模糊的边缘过渡收在域内，
+    原遮罩为零的位置合成权重恒为 0，逐像素与原图一致。
+    """
     original = Image.open(io.BytesIO(source)).convert("RGBA")
     result = Image.open(io.BytesIO(edited)).convert("RGBA")
     if result.size != original.size:
         result = result.resize(original.size, Image.Resampling.LANCZOS)
-    luma = to_luma(mask, original.size).filter(ImageFilter.GaussianBlur(1.2))
-    return _png(Image.composite(result, original, luma))
+    luma = to_luma(mask, original.size)
+    domain = luma.point(lambda v: 255 if v > 0 else 0)
+    weight = ImageChops.multiply(luma.filter(ImageFilter.GaussianBlur(1.2)), domain)
+    return _png(Image.composite(result, original, weight))
 
 
 def _dot(draw: ImageDraw.ImageDraw, point: tuple[float, float], brush: int) -> None:

@@ -165,3 +165,75 @@ async def test_color_variants_undo_rolls_back_all_and_redo_restores(
 
     redone = (await signed_in.post(f"/api/sessions/{session['id']}/redo")).json()
     assert len([l for l in redone["document"]["layers"] if l["id"].startswith("variant-")]) == 2
+
+
+# ---- E2E-F01：独立主体前提与透明产物 ----
+
+
+async def test_variants_require_split_or_selection(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """未拆层且无选区：底图是完整场景，拒绝执行并给出可操作引导，不复制整场景。"""
+    session = await open_session(signed_in, image=scene())
+    turn = await start_variants(
+        fake_planner, signed_in, session["id"], ["红色"], layer_id=None
+    )
+    finished = await settle(signed_in, session["id"])
+
+    assert finished["status"] == "failed"
+    error = finished.get("error") or ""
+    assert "点选" in error or "拆分" in error
+    updated = (await signed_in.get(f"/api/sessions/{session['id']}")).json()
+    assert not [l for l in updated["document"]["layers"] if l["id"].startswith("variant-")]
+    assert updated["revision"] == session["revision"]  # 画布未动
+
+
+async def test_variants_cut_subject_from_selection(
+    signed_in: httpx.AsyncClient, fake_planner, edit_requests: list
+):
+    """未拆层但已点选主体：选区裁出真主体切片，变体是透明独立图层而非整场景。"""
+    from tests.canvas import select
+
+    session = await open_session(signed_in, image=scene())
+    selected = await select(
+        signed_in, session["id"], session["revision"], points=[{"x": 0.5, "y": 0.5}]
+    )
+    turn = await start_variants(
+        fake_planner, signed_in, session["id"], ["红色", "蓝色"], layer_id=None
+    )
+    finished = await settle(signed_in, session["id"])
+    assert finished["status"] == "succeeded", finished.get("error")
+
+    updated = (await signed_in.get(f"/api/sessions/{session['id']}")).json()
+    variants = [l for l in updated["document"]["layers"] if l["id"].startswith("variant-")]
+    assert len(variants) == 2
+    for layer in variants:
+        data = await asset_bytes_of(layer["asset_id"])
+        image = Image.open(io.BytesIO(data)).convert("RGBA")
+        alpha = image.getchannel("A")
+        # 独立主体：不是整场景不透明图，主体外透明
+        assert alpha.getextrema()[0] == 0, "变体必须保留主体外透明"
+        assert image.size != (320, 240)  # 裁到选区包围盒附近而非整画布
+
+    # 每色同一源：两次请求输入完全一致（选区裁出的主体切片）
+    assert edit_requests[-1].image == edit_requests[-2].image
+    assert edit_requests[-1].count == 1
+    # 原底图素材未被改动
+    assert layers(updated)["base"]["asset_id"] == session["current_asset_id"]
+
+
+async def test_variants_reapply_subject_alpha(signed_in: httpx.AsyncClient, fake_planner):
+    """拆层主体源：模型返回不透明画布时，变体重应用主体 alpha 保持透明背景。"""
+    session = await prepared_session(signed_in)
+    subject = layers(session)["subject"]
+    turn = await start_variants(fake_planner, signed_in, session["id"], ["红色"])
+    finished = await settle(signed_in, session["id"])
+    assert finished["status"] == "succeeded", finished.get("error")
+
+    updated = (await signed_in.get(f"/api/sessions/{session['id']}")).json()
+    variant = next(l for l in updated["document"]["layers"] if l["id"].startswith("variant-"))
+    data = await asset_bytes_of(variant["asset_id"])
+    image = Image.open(io.BytesIO(data)).convert("RGBA")
+    # mock 的编辑结果是全不透明画布；修复前变体 alpha 极值是 [255, 255]
+    assert image.getchannel("A").getextrema()[0] == 0
+    assert (image.width, image.height) == (subject["width"], subject["height"])

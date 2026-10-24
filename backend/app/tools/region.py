@@ -1,7 +1,7 @@
 import io
 import uuid
 
-from PIL import Image, ImageFilter
+from PIL import Image, ImageChops, ImageFilter
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -52,17 +52,24 @@ def _target(document: LayerDocument, layer_id: str | None, mask: bytes | None) -
 
 def _layer_luma_mask(
     source: bytes, mask: bytes | None, layer: Layer, canvas: tuple[int, int]
-) -> Image.Image | None:
-    """无选区时用该层透明通道当区域（返回 None 表示改整层）；有选区取与该层的交集。"""
+) -> tuple[Image.Image, Image.Image] | None:
+    """无选区时返回 None（改整层）；有选区返回 (羽化源, 严格域) 两个层本地遮罩。
+
+    羽化源用 BILINEAR 重采样保留软边；严格域用 NEAREST 重采样——最近邻不会把
+    非零渗入画布遮罩为零的位置，用作合成的合法域（E2E-F05）。
+    """
     if mask is None:
         return None
     try:
         local = to_layer_mask(mask, layer, canvas)
+        domain = to_layer_mask(
+            mask, layer, canvas, resample=Image.Resampling.NEAREST
+        )
     except EmptyCut as exc:
         raise ToolError("选区没有覆盖到该图层") from exc
-    if local.getbbox() is None:
+    if local.getbbox() is None or domain.getbbox() is None:
         raise ToolError("选区没有覆盖到该图层")
-    return local
+    return local, domain
 
 
 def _roi_box(luma: Image.Image, size: tuple[int, int]) -> tuple[int, int, int, int]:
@@ -86,16 +93,19 @@ async def _edit_roi(
     session: AsyncSession,
     run: ToolRun,
     source: Image.Image,
-    luma: Image.Image,
+    masks: tuple[Image.Image, Image.Image],
     scoped: str,
 ) -> Image.Image:
     """把选区裁成 ROI 发给模型：输入本身就带目标位置，不靠文字猜（AER-FR-004）。
 
-    只在 ROI 内做遮罩合成再原位贴回，区域外像素按构造保持原样。
+    只在 ROI 内做遮罩合成再原位贴回；羽化被限制在原遮罩非零域内，
+    域外（含选区边缘外环带）逐像素保持原样（E2E-F05）。
     """
+    luma, domain = masks
     box = _roi_box(luma, source.size)
     roi = source.crop(box)
     roi_mask = luma.crop(box)
+    roi_domain = domain.crop(box)
     edited = (
         await get_image_provider().edit(
             EditRequest(
@@ -113,7 +123,11 @@ async def _edit_roi(
     result = Image.open(io.BytesIO(edited)).convert("RGBA")
     if result.size != roi.size:
         result = result.resize(roi.size, Image.Resampling.LANCZOS)
-    merged = Image.composite(result, roi, roi_mask.filter(ImageFilter.GaussianBlur(1.2)))
+    weight = roi_mask.filter(ImageFilter.GaussianBlur(1.2))
+    weight = ImageChops.multiply(
+        weight, roi_domain.point(lambda v: 255 if v > 0 else 0)
+    )
+    merged = Image.composite(result, roi, weight)
     output = source.copy()
     output.paste(merged, (box[0], box[1]))
     return output
@@ -132,11 +146,11 @@ async def _edit_region(session: AsyncSession, run: ToolRun, *, scoped: str, whol
     await runs.report(session, run, 20, "读取图层")
     source_bytes = await layer_image(session, record, layer)
     source = Image.open(io.BytesIO(source_bytes)).convert("RGBA")
-    luma = _layer_luma_mask(source_bytes, mask, layer, (document.width, document.height))
+    masks = _layer_luma_mask(source_bytes, mask, layer, (document.width, document.height))
 
     await runs.report(session, run, 40, "局部生成")
-    if luma is not None:
-        output = await _edit_roi(session, run, source, luma, scoped)
+    if masks is not None:
+        output = await _edit_roi(session, run, source, masks, scoped)
     else:
         edited = (
             await get_image_provider().edit(

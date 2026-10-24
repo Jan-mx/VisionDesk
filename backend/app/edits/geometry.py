@@ -64,11 +64,19 @@ def overlaps_rect(corners: list[tuple[float, float]], rect: tuple[int, int, int,
     return True
 
 
-def to_layer_mask(mask: bytes, layer: Layer, canvas: tuple[int, int]) -> Image.Image:
+def to_layer_mask(
+    mask: bytes,
+    layer: Layer,
+    canvas: tuple[int, int],
+    *,
+    resample: Image.Resampling = Image.Resampling.BILINEAR,
+) -> Image.Image:
     """画布坐标选区（PNG 遮罩）逆变换到层本地坐标的 L 模式遮罩。
 
     PIL transform 的仿射系数是「输出像素坐标 → 输入取样坐标」，
     输出是层本地、输入是画布，恰好就是 forward 系数。
+    羽化合成用默认 BILINEAR（软边）；严格像素域校验用 NEAREST
+    （最近邻不会把非零值渗入画布遮罩为零的位置）。
     """
     luma = to_luma(mask, canvas)
     fa, fb, fc, fd, fe, ff = forward(layer)
@@ -76,7 +84,7 @@ def to_layer_mask(mask: bytes, layer: Layer, canvas: tuple[int, int]) -> Image.I
         (layer.width, layer.height),
         Image.Transform.AFFINE,
         (fa, fb, fc, fd, fe, ff),
-        resample=Image.Resampling.BILINEAR,
+        resample=resample,
     )
 
 

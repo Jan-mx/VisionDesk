@@ -151,6 +151,47 @@ async def test_region_edit_keeps_pixels_outside_selection(signed_in: httpx.Async
     right_half_unchanged(source, output, 320)
 
 
+async def test_region_edit_keeps_strict_zero_mask_pixels(signed_in: httpx.AsyncClient):
+    """E2E-F05：原遮罩严格为零的每个像素逐字节不变（含选区边缘外环带）。
+
+    此前断言只查远半区，羽化 blur 扩散出的 2-3px 环带逃过了检查——真实模型
+    复现了 2,690 个零遮罩像素变化；本用例按遮罩逐像素严格核对，并确认域内确实变化。
+    """
+    from app.edits.mask import to_luma
+
+    source = asymmetric()
+    session = await open_session(signed_in, image=source)
+    selected = await select(
+        signed_in, session["id"], session["revision"], points=[{"x": 0.25, "y": 0.5}]
+    )
+    body = await invoke(
+        signed_in,
+        session["id"],
+        "replace_region",
+        {"prompt": "改成黑色", "mask_asset_id": selected["mask"]["id"], "revision": session["revision"]},
+    )
+    await run_tool({}, uuid.UUID(body["run"]["id"]))
+    updated = (await signed_in.get(f"/api/sessions/{session['id']}")).json()
+
+    layer = updated["document"]["layers"][0]
+    output = await layer_asset_bytes(layer["asset_id"])
+    before = Image.open(io.BytesIO(source)).convert("RGB")
+    after = Image.open(io.BytesIO(output)).convert("RGB")
+    assert after.size == before.size
+
+    mask_bytes = await layer_asset_bytes(selected["mask"]["id"])
+    luma = to_luma(mask_bytes, before.size)
+    diff = ImageChops.difference(before, after)
+
+    zero = luma.point(lambda v: 255 if v == 0 else 0)
+    outside_diff = ImageChops.multiply(diff, Image.merge("RGB", (zero, zero, zero)))
+    assert outside_diff.getbbox() is None, "原遮罩严格为零的像素被改动"
+
+    inside = luma.point(lambda v: 255 if v > 0 else 0)
+    inside_diff = ImageChops.multiply(diff, Image.merge("RGB", (inside, inside, inside)))
+    assert inside_diff.getbbox() is not None  # 域内确有变化，防恒等假通过
+
+
 # ---- AER-FR-006：换背景只应用一次变换 ----
 
 
