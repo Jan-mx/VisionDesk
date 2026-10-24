@@ -78,7 +78,19 @@ def to_layer_mask(
     羽化合成用默认 BILINEAR（软边）；严格像素域校验用 NEAREST
     （最近邻不会把非零值渗入画布遮罩为零的位置）。
     """
-    luma = to_luma(mask, canvas)
+    return to_layer_mask_luma(to_luma(mask, canvas), layer, canvas, resample=resample)
+
+
+def to_layer_mask_luma(
+    luma: Image.Image,
+    layer: Layer,
+    canvas: tuple[int, int],
+    *,
+    resample: Image.Resampling = Image.Resampling.BILINEAR,
+) -> Image.Image:
+    """画布坐标 L 遮罩逆变换到层本地（to_layer_mask 的图像入参版本）。"""
+    if luma.size != canvas:
+        luma = luma.resize(canvas, Image.Resampling.NEAREST)
     fa, fb, fc, fd, fe, ff = forward(layer)
     return luma.transform(
         (layer.width, layer.height),

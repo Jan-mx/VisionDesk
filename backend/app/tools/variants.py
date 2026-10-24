@@ -8,7 +8,6 @@ from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.edits.geometry import to_layer_mask
-from app.edits.mask import apply_masked
 from app.edits.split import EmptyCut, alpha_mask
 from app.layers import Layer, LayerKind, Transform
 from app.models.asset import AssetKind, AssetSource
@@ -54,6 +53,19 @@ def _png(image: Image.Image) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+def _restore_silhouette(subject: Image.Image, edited: bytes) -> bytes:
+    """把编辑结果的 RGB 贴回源主体的精确轮廓：alpha 逐值取源主体通道（AC-033）。
+
+    「保留轮廓」与「局部 RGBA 合成」是两个职责：前者要求软边值（1/16/32/128/254）
+    原样保留，不能经羽化合成漂移或变实；主体外（alpha=0）天然全透明。
+    """
+    result = Image.open(io.BytesIO(edited)).convert("RGBA")
+    if result.size != subject.size:
+        result = result.resize(subject.size, Image.Resampling.LANCZOS)
+    result.putalpha(subject.getchannel("A"))
+    return _png(result)
 
 
 def _subject_of(
@@ -142,8 +154,8 @@ async def create_color_variants_exec(session: AsyncSession, run: ToolRun) -> dic
         except ProviderError:
             missing.append(color)
             continue
-        # 模型常返回不透明画布：重应用主体 alpha，保证主体外透明（E2E-F01）
-        merged = apply_masked(request_image, images[0], subject_alpha)
+        # 模型常返回不透明画布：轮廓恢复以源主体 alpha 为准（逐值，AC-033）
+        merged = _restore_silhouette(subject, images[0])
         asset = await assets.create_from_bytes(
             session, run.user_id, merged, AssetKind.GENERATED, AssetSource.TOOL
         )

@@ -5,7 +5,7 @@ from PIL import Image, ImageChops, ImageFilter
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.edits.geometry import to_layer_mask
+from app.edits.geometry import to_layer_mask_luma
 from app.edits.split import EmptyCut, alpha_mask
 from app.layers import Layer, LayerDocument
 from app.models.asset import AssetKind, AssetSource
@@ -50,20 +50,35 @@ def _target(document: LayerDocument, layer_id: str | None, mask: bytes | None) -
     return resolve_target(document, layer_id)
 
 
+# 最终画布保护的域侵蚀半径（AC-034）：渲染链对层内容做 LANCZOS 缩放（±3 目标像素）
+# 与 BICUBIC 旋转（±2），加上定位取整；画布域向内侵蚀 6px 后，被保护画布像素的
+# 重采样抽头只会落在未改动层像素上——缩放/旋转/翻转后的最终画布零遮罩像素逐字节不变
+_ERODE_RADIUS = 6
+
+
 def _layer_luma_mask(
     source: bytes, mask: bytes | None, layer: Layer, canvas: tuple[int, int]
 ) -> tuple[Image.Image, Image.Image] | None:
-    """无选区时返回 None（改整层）；有选区返回 (羽化源, 严格域) 两个层本地遮罩。
+    """无选区时返回 None（改整层）；有选区返回 (羽化源, 合法域) 两个层本地遮罩。
 
-    羽化源用 BILINEAR 重采样保留软边；严格域用 NEAREST 重采样——最近邻不会把
-    非零渗入画布遮罩为零的位置，用作合成的合法域（E2E-F05）。
+    羽化源用 BILINEAR 重采样保留软边；合法域取自「画布域(>0) 向内侵蚀后」的
+    NEAREST 重采样——层内只允许侵蚀域内的像素变化，其渲染足迹（含放大/旋转
+    插值）无法波及画布遮罩为零的位置（AC-034）。
     """
     if mask is None:
         return None
+    from app.edits.mask import to_luma
+
+    canvas_luma = to_luma(mask, canvas)
+    eroded_domain = (
+        canvas_luma.point(lambda v: 255 if v > 0 else 0)
+        .filter(ImageFilter.MinFilter(2 * _ERODE_RADIUS + 1))
+        .point(lambda v: 255 if v > 0 else 0)
+    )
     try:
-        local = to_layer_mask(mask, layer, canvas)
-        domain = to_layer_mask(
-            mask, layer, canvas, resample=Image.Resampling.NEAREST
+        local = to_layer_mask_luma(canvas_luma, layer, canvas)
+        domain = to_layer_mask_luma(
+            eroded_domain, layer, canvas, resample=Image.Resampling.NEAREST
         )
     except EmptyCut as exc:
         raise ToolError("选区没有覆盖到该图层") from exc

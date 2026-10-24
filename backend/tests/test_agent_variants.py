@@ -5,7 +5,7 @@ import uuid
 
 import httpx
 import pytest
-from PIL import Image, ImageChops
+from PIL import Image, ImageChops, ImageDraw
 
 from app import storage
 from app.db import SessionFactory
@@ -237,3 +237,62 @@ async def test_variants_reapply_subject_alpha(signed_in: httpx.AsyncClient, fake
     # mock 的编辑结果是全不透明画布；修复前变体 alpha 极值是 [255, 255]
     assert image.getchannel("A").getextrema()[0] == 0
     assert (image.width, image.height) == (subject["width"], subject["height"])
+
+
+# ---- 三轮 AC-033：完整恢复主体 alpha（逐值，不是极值） ----
+
+
+def soft_alpha_subject(size=(300, 300)) -> bytes:
+    """透明底 + 中心不透明主体 + 软边环带含 1/16/32/128/254 等中间 alpha 值。"""
+    image = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+    draw.ellipse((80, 80, 220, 220), fill=(40, 120, 200, 255))
+    # 软边：主体边缘向外逐环降低 alpha，覆盖各档中间值
+    for offset, alpha in enumerate((254, 128, 32, 16, 1), start=1):
+        draw.ellipse(
+            (80 - offset * 3, 80 - offset * 3, 220 + offset * 3, 220 + offset * 3),
+            outline=(40, 120, 200, alpha),
+            width=3,
+        )
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+async def test_variants_restore_soft_alpha_value_by_value(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """AC-033：变体 alpha 与源主体切片逐值相同（软边值不得变实或丢失）。"""
+    session = await open_session(signed_in, image=soft_alpha_subject())
+    turn = await start_variants(fake_planner, signed_in, session["id"], ["红色"], layer_id="base")
+    finished = await settle(signed_in, session["id"])
+    assert finished["status"] == "succeeded", finished.get("error")
+
+    updated = (await signed_in.get(f"/api/sessions/{session['id']}")).json()
+    variant = next(l for l in updated["document"]["layers"] if l["id"].startswith("variant-"))
+    data = await asset_bytes_of(variant["asset_id"])
+
+    # 源主体切片：与工具同一提取逻辑（透明底 + trim 裁剪）
+    from app.tools.variants import _subject_of, _trim_box
+    from app.layers import LayerDocument
+
+    base = layers(session)["base"]
+    doc = LayerDocument.model_validate(session["document"])
+    source_layer = next(l for l in doc.layers if l.id == "base")
+    source_bytes = await asset_bytes_of(base["asset_id"])
+    from PIL import Image as _Image
+
+    source = _Image.open(io.BytesIO(source_bytes)).convert("RGBA")
+    subject = _subject_of(source, None, source_layer, (doc.width, doc.height))
+    variant_img = _Image.open(io.BytesIO(data)).convert("RGBA")
+
+    assert variant_img.size == subject.size
+    diff = ImageChops.difference(
+        subject.getchannel("A"), variant_img.getchannel("A")
+    )
+    assert diff.getbbox() is None, "变体 alpha 与源主体逐值不一致"
+    # 域内确有变化（防恒等假通过）：主体不透明区的 RGB 与源不同
+    rgb_diff = ImageChops.difference(
+        subject.convert("RGB"), variant_img.convert("RGB")
+    )
+    assert rgb_diff.getbbox() is not None

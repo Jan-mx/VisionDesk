@@ -192,6 +192,152 @@ async def test_region_edit_keeps_strict_zero_mask_pixels(signed_in: httpx.AsyncC
     assert inside_diff.getbbox() is not None  # 域内确有变化，防恒等假通过
 
 
+# ---- 三轮 AC-033 回归：产物编辑分支保留透明零区 ----
+
+
+async def test_product_edit_preserves_zero_alpha(signed_in: httpx.AsyncClient):
+    """声明「透明区域仍然透明」的产物编辑：输入 alpha==0 的像素逐值不变。"""
+    from tests.test_sessions import upload
+
+    subject = Image.new("RGBA", (200, 150), (0, 0, 0, 0))
+    ImageDraw.Draw(subject).rectangle((70, 45, 130, 105), fill=(200, 60, 30, 255))
+    upload_buf = io.BytesIO()
+    subject.save(upload_buf, format="PNG")
+    session = await open_session(signed_in, image=upload_buf.getvalue())
+    asset_id = session["current_asset_id"]
+
+    run = await invoke(
+        signed_in,
+        session["id"],
+        "replace_region",
+        {"prompt": "把主体改成蓝色", "source_asset_id": asset_id},
+    )
+    await run_tool({}, uuid.UUID(run["run"]["id"]))
+    result = (await signed_in.get(f"/api/runs/{run['run']['id']}")).json()
+    assert result["status"] == "succeeded", result.get("error")
+    product_id = result["result"]["asset_ids"][0]
+    product = Image.open(io.BytesIO(await layer_asset_bytes(product_id))).convert("RGBA")
+    assert product.size == subject.size
+    zero = subject.getchannel("A").point(lambda v: 255 if v == 0 else 0)
+    diff = ImageChops.difference(subject, product)
+    leaked = ImageChops.multiply(diff, Image.merge("RGBA", (zero, zero, zero, zero)))
+    assert leaked.getbbox() is None, "透明零区被修改"
+
+
+# ---- 三轮 AC-034：最终画布坐标的零遮罩保护（含渲染链变换） ----
+
+
+def canvas_domain_check(before: bytes, after: bytes, mask_bytes: bytes, size) -> tuple[int, int]:
+    """画布空间逐像素：返回 (mask==0 处变化像素数, mask>0 处变化像素数)。"""
+    from app.edits.mask import to_luma
+
+    b = Image.open(io.BytesIO(before)).convert("RGBA")
+    a = Image.open(io.BytesIO(after)).convert("RGBA")
+    m = to_luma(mask_bytes, size)
+    outside = inside = 0
+    for y in range(size[1]):
+        for x in range(size[0]):
+            if b.getpixel((x, y)) == a.getpixel((x, y)):
+                continue
+            if m.getpixel((x, y)) == 0:
+                outside += 1
+            else:
+                inside += 1
+    return outside, inside
+
+
+async def run_transformed_region_case(
+    signed_in, transforms: list[tuple[str, dict]], point: dict
+) -> tuple[int, int]:
+    """建会话→套变换→点选→局部替换→返回画布空间 (域外变化, 域内变化)。"""
+    source = asymmetric()
+    session = await open_session(signed_in, image=source)
+    for tool, params in transforms:
+        body = await invoke(signed_in, session["id"], tool, params)
+        await run_tool({}, uuid.UUID(body["run"]["id"]))
+    transformed = (await signed_in.get(f"/api/sessions/{session['id']}")).json()
+    before = await flatten_of(transformed)
+
+    selected = await select(
+        signed_in, session["id"], transformed["revision"], points=[point]
+    )
+    body = await invoke(
+        signed_in,
+        session["id"],
+        "replace_region",
+        {
+            "prompt": "改成黑色",
+            "mask_asset_id": selected["mask"]["id"],
+            "revision": transformed["revision"],
+        },
+    )
+    await run_tool({}, uuid.UUID(body["run"]["id"]))
+    updated = (await signed_in.get(f"/api/sessions/{session['id']}")).json()
+    after = await flatten_of(updated)
+    mask_bytes = await layer_asset_bytes(selected["mask"]["id"])
+    return canvas_domain_check(before, after, mask_bytes, (320, 240))
+
+
+async def test_region_final_canvas_protected_without_transform(signed_in: httpx.AsyncClient):
+    """AC-034 基线：无变换时画布零遮罩像素逐字节不变，域内改动成立。"""
+    outside, inside = await run_transformed_region_case(
+        signed_in, [], {"x": 0.25, "y": 0.5}
+    )
+    assert outside == 0
+    assert inside > 50
+
+
+async def test_region_final_canvas_protected_after_scale_2x(signed_in: httpx.AsyncClient):
+    """AC-034：底图放大 2 倍后局部编辑，最终画布零遮罩像素仍逐字节不变。"""
+    outside, inside = await run_transformed_region_case(
+        signed_in,
+        [("scale_layer", {"layer_id": "base", "factor": 2})],
+        {"x": 0.25, "y": 0.5},
+    )
+    assert outside == 0
+    assert inside > 50
+
+
+async def test_region_final_canvas_protected_after_rotate_15(signed_in: httpx.AsyncClient):
+    """AC-034：底图旋转 15° 后局部编辑，最终画布零遮罩像素仍逐字节不变。"""
+    outside, inside = await run_transformed_region_case(
+        signed_in,
+        [("rotate_layer", {"layer_id": "base", "rotation": 15})],
+        {"x": 0.25, "y": 0.5},
+    )
+    assert outside == 0
+    assert inside > 50
+
+
+async def test_region_final_canvas_protected_after_flip_and_nonuniform(
+    signed_in: httpx.AsyncClient,
+):
+    """AC-034：水平翻转 + 非等比缩放组合后局部编辑，画布保护仍成立。"""
+    outside, inside = await run_transformed_region_case(
+        signed_in,
+        [
+            ("flip_layer", {"direction": "horizontal"}),
+            ("scale_layer", {"layer_id": "base", "scale_x": 1.6, "scale_y": 0.7}),
+        ],
+        {"x": 0.75, "y": 0.5},
+    )
+    assert outside == 0
+    assert inside > 50
+
+
+async def test_region_final_canvas_protected_boundary_selection(
+    signed_in: httpx.AsyncClient,
+):
+    """AC-034：贴边选区（选区触到画布边界）同样不得泄漏。"""
+    outside, inside = await run_transformed_region_case(
+        signed_in,
+        [("scale_layer", {"layer_id": "base", "factor": 2})],
+        {"x": 0.06, "y": 0.5},
+    )
+    assert outside == 0
+    assert inside > 20
+
+
 # ---- AER-FR-006：换背景只应用一次变换 ----
 
 
