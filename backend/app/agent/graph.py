@@ -62,9 +62,11 @@ _SYSTEM = """你是电商图片修图助手，通过调用工具完成用户的�
 _FALLBACK_REPLY = "没太理解这条指令，换个说法或说得更具体一些。"
 
 _REVIEW_SYSTEM = """你是修图计划复审员。核对用户指令与已排步骤：
-- 每一项要求都有对应步骤 → 不调用任何工具，直接回复：完整
+- 每一项要求都有对应步骤，且没有用户没要求的步骤 → 不调用任何工具，直接回复：完整
 - 还有要求没有对应步骤 → 只为缺失的要求调用工具补步骤（可一次多个），
-  不要重复或改写已有步骤，不要为已覆盖的要求再调用
+  不要重复或改写已有步骤，不要添加用户没要求的控制性步骤
+  （如隐藏图层、调透明度、调顺序；拆层只允许多颜色主体/提升为图层的前置）
+- 复审补充的步骤会与服务端已排步骤做语义去重与结构校验，重复或无依据的补充会被丢弃
 
 用户指令：
 {goal}
@@ -73,6 +75,12 @@ _REVIEW_SYSTEM = """你是修图计划复审员。核对用户指令与已排步
 {steps}
 
 当前画布：{context}"""
+
+# 复审只允许补「缺失的用户要求」；这些纯控制性工具不构成任何缺失要求（AC-029）
+_BLOCKED_ADDITION_TOOLS = {"set_layer_visible", "set_layer_opacity", "reorder_layer"}
+# 拆层只允许作为需要独立主体的工具的前置（AC-029）
+_NEEDS_SUBJECT_TOOLS = {"create_color_variants", "promote_object_to_layer"}
+_REVIEW_CLARIFY = "这条指令的计划可能不完整，自动补全没有成功：请拆成两句分别发送，或换一种说法。"
 
 _REFUSAL_LIMIT = 60
 _CALL_LIKE = re.compile(r"^[a-z_][a-z0-9_]*\s*\(")
@@ -123,31 +131,20 @@ def _verify(state: AgentState) -> AgentState:
         return {"plan": [], "reply": f"这一步暂时执行不了：{exc}"}
 
 
-def _dedupe_steps(steps: list[dict]) -> list[dict]:
-    """按工具+参数去除完全重复的步骤，防复审回路造成重复执行与重复计费。"""
-    seen: set = set()
-    result = []
-    for step in steps:
-        key = (
-            step["tool"],
-            json.dumps(step.get("params") or {}, sort_keys=True, ensure_ascii=False),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(step)
-    return result
+def _canonical_params(tool: str, params: dict) -> dict:
+    """按工具 Schema 归一化：省略值、显式 null、默认值与类型统一到同一形态。
 
-
-async def _review(state: AgentState) -> AgentState:
-    """一次有界复审：逐项核对要求是否都有步骤，缺则补齐（E2E-F04）。
-
-    真实规划器对复合指令常只发第一个工具调用；复审在规划期补齐缺失步骤，
-    执行与计费仍发生在用户确认之后。复审重复已有步骤或给出无效调用时原样
-    丢弃，不破坏初始计划。
+    归一化只用于等价比较（AC-026）；不写回计划——初始步骤保留模型原始参数。
     """
-    if not state["plan"]:
-        return {}
+    return tool_service.validate(tool, params)
+
+
+def _step_key(tool: str, canonical: dict) -> tuple[str, str]:
+    return (tool, json.dumps(canonical, sort_keys=True, ensure_ascii=False))
+
+
+async def _review_call(state: AgentState):
+    """执行一次复审调用；异常返回 None（调用方决定重试或停止）。"""
     steps_summary = "\n".join(
         f"{index}. {step['tool']} {json.dumps(step.get('params') or {}, ensure_ascii=False)}"
         for index, step in enumerate(state["plan"], start=1)
@@ -162,19 +159,80 @@ async def _review(state: AgentState) -> AgentState:
             HumanMessage("请复审。"),
         ]
     )
-    additions = [
+    return [
         {"tool": call["name"], "params": call.get("args") or {}}
         for call in (message.tool_calls or [])
     ]
+
+
+async def _review(state: AgentState) -> AgentState:
+    """一次有界复审：双向核对要求覆盖并合并缺失步骤（E2E-F04 / AC-026～029）。
+
+    - 回显的重复步骤按语义归一化去重（省略值/null/默认值视为同一调用），
+      但初始计划内部用户明确要求的重复次数不折叠（AC-027）。
+    - 纯控制性补充（隐藏/透明度/顺序）与无依赖的拆层补充直接丢弃（AC-029）；
+      拆层作为变体/提层前置时插入到依赖步骤之前。
+    - 复审补充无效（未知工具/非法参数）或复审调用失败（一次重试后仍失败）时
+      安全停止：清空计划并给出可读澄清，绝不静默执行不完整计划冒充完成（AC-028）。
+    """
+    if not state["plan"]:
+        return {}
+    try:
+        additions = await _review_call(state)
+    except Exception:
+        try:
+            additions = await _review_call(state)
+        except Exception:
+            return {"plan": [], "reply": _REVIEW_CLARIFY}
     if not additions:
         return {}
-    merged = _dedupe_steps(list(state["plan"]) + additions)
-    if len(merged) == len(state["plan"]):
+
+    initial = list(state["plan"])
+    try:
+        initial_keys = {
+            _step_key(step["tool"], _canonical_params(step["tool"], step.get("params") or {}))
+            for step in initial
+        }
+    except (UnknownTool, tool_service.InvalidParams):
+        return {}  # 初始计划本身过不了校验：交给 _verify 统一处理
+    kept: list[dict] = []
+    for addition in additions:
+        try:
+            canonical = _canonical_params(addition["tool"], addition["params"])
+        except (UnknownTool, tool_service.InvalidParams):
+            # 复审认为缺了什么但表达不可用：不能静默按不完整计划执行（AC-028）
+            return {"plan": [], "reply": _REVIEW_CLARIFY}
+        if _step_key(addition["tool"], canonical) in initial_keys:
+            continue  # 语义等价的回显：丢弃，不折叠初始内的有意重复
+        merged_tools = {step["tool"] for step in initial} | {step["tool"] for step in kept}
+        if addition["tool"] in _BLOCKED_ADDITION_TOOLS:
+            continue  # 无依据的控制性步骤：丢弃（AC-029）
+        if addition["tool"] == "split_layers" and not (
+            merged_tools & _NEEDS_SUBJECT_TOOLS
+        ):
+            continue  # 没有需要独立主体的步骤：拆层不是前置，丢弃（AC-029）
+        kept.append({"tool": addition["tool"], "params": canonical})
+    if not kept:
         return {}
+
+    merged = list(initial)
+    prerequisite = [step for step in kept if step["tool"] == "split_layers"]
+    others = [step for step in kept if step["tool"] != "split_layers"]
+    if prerequisite:
+        insert_at = next(
+            (
+                index
+                for index, step in enumerate(merged)
+                if step["tool"] in _NEEDS_SUBJECT_TOOLS
+            ),
+            len(merged),
+        )
+        merged[insert_at:insert_at] = prerequisite
+    merged.extend(others)
     try:
         return {"plan": validate(merged)}
     except (UnknownTool, tool_service.InvalidParams, PlanError):
-        return {}  # 补充步骤无效：保留可执行的初始计划
+        return {"plan": [], "reply": _REVIEW_CLARIFY}
 
 
 @lru_cache

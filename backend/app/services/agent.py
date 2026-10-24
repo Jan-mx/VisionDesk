@@ -363,16 +363,26 @@ class PlanInputError(Exception):
 
 
 async def _resolve_step_input(
-    session: AsyncSession, session_id: uuid.UUID, steps: list[dict], step: dict
+    session: AsyncSession,
+    session_id: uuid.UUID,
+    user_id: uuid.UUID,
+    steps: list[dict],
+    step: dict,
 ) -> dict:
-    """解析 from_previous 步骤的输入来源（AER-FR-003 / E2E-F03）。
+    """解析 from_previous 步骤的输入来源（AER-FR-003 / AC-030～032）。
 
-    优先取本计划内最近已成功前置步骤的产物；跨轮引用（上一轮生成的海报等）
-    回退到本会话最近一条有图片产物的已成功任务。引用随 plan 持久化（解析结果
-    写回 params），刷新与 Worker 重启后不依赖内存；单步重试时上游已成功不重跑。
-    绝不回落当前画布、不猜 UUID、多产物未指明序号时明确报错。
+    首次可信解析把 source_asset_id 随 plan 持久化；此后重试、刷新与 Worker
+    恢复一律沿用同一来源（来源失效则明确失败，不换最新产物、不回落画布）。
+    优先取本计划内最近已成功前置步骤的产物；跨轮引用回退到本会话最近一条
+    有图片产物的已成功任务。多产物未指明序号时明确报错，绝不静默选首图。
     """
     params = step["params"]
+    pinned = params.get("source_asset_id")
+    if pinned:
+        asset = await assets.get_for_user(session, user_id, uuid.UUID(str(pinned)))
+        if asset is None or asset.library_hidden:
+            raise PlanInputError("引用的上一步产物已不存在或不可访问，请重新生成后再试")
+        return params
     if not params.get("from_previous"):
         return params
     by_id = {other["id"]: other for other in steps}
@@ -391,7 +401,7 @@ async def _resolve_step_input(
         produced = latest[1]
     else:
         run = await session.get(ToolRun, uuid.UUID(upstream["run_id"]))
-        produced = ((run.result if run else None) or {}).get("asset_ids") or []
+        produced = _products_of(run)
         if not produced:
             raise PlanInputError("前置步骤没有可用的图片产物")
     if len(produced) > 1:
@@ -408,18 +418,33 @@ async def _resolve_step_input(
     return {**params, "source_asset_id": chosen}
 
 
+def _products_of(run: ToolRun | None) -> list:
+    """一次任务的图片产物：普通 asset_ids 与批量 items[].output_ids 统一（AC-031）。"""
+    result = (run.result if run else None) or {}
+    products = list(result.get("asset_ids") or [])
+    if not products:
+        for item in result.get("items") or []:
+            if item.get("status") == "succeeded":
+                products.extend(item.get("output_ids") or [])
+    return products
+
+
 async def _latest_products(session: AsyncSession, session_id: uuid.UUID) -> tuple | None:
-    """本会话最近一条产出图片的已成功工具任务：(工具名, 产物 ID 列表)。"""
+    """本会话最近一条产出图片的已成功工具任务：(工具名, 产物 ID 列表)。
+
+    按时间倒序找第一条有产物的任务；批量任务的 items 输出同样算产物，
+    不会跳过最新批量结果静默使用更早的海报（AC-031）。
+    """
     result = await session.execute(
-        select(ToolRun.tool, ToolRun.result)
+        select(ToolRun)
         .where(ToolRun.session_id == session_id, ToolRun.status == RunStatus.SUCCEEDED)
         .order_by(ToolRun.created_at.desc(), ToolRun.id.desc())
-        .limit(6)
+        .limit(200)
     )
-    for tool, run_result in result.all():
-        produced = ((run_result or {}).get("asset_ids")) or []
+    for run in result.scalars():
+        produced = _products_of(run)
         if produced:
-            return tool, produced
+            return run.tool, produced
     return None
 
 
@@ -433,7 +458,9 @@ async def _advance(session: AsyncSession, turn: AgentRun) -> AgentRun:
                 step["status"] = plan_mod.WAITING
                 continue
             try:
-                params = await _resolve_step_input(session, turn.session_id, steps, step)
+                params = await _resolve_step_input(
+                    session, turn.session_id, turn.user_id, steps, step
+                )
             except PlanInputError as exc:
                 # 产物引用解析失败：步骤失败并带可读原因，绝不回落画布（AER-FR-003）
                 step["status"] = plan_mod.FAILED

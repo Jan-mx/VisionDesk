@@ -10,10 +10,12 @@ from PIL import Image, ImageDraw
 
 from app import storage
 from app.db import SessionFactory
+from sqlalchemy import select as _select_toolrun
 from app.models import Asset, EditSession
 from app.tasks.tools import run_tool
 from tests.canvas import settle
 from tests.test_agent import fake_planner, send, signed_in, tool_call, tool_calls
+from tests.canvas import scene
 from tests.test_sessions import open_session
 
 
@@ -496,15 +498,17 @@ async def test_review_pass_dedupes_repeated_steps(
 async def test_review_pass_drops_invalid_additions(
     signed_in: httpx.AsyncClient, fake_planner
 ):
-    """复审补充的无效调用被丢弃，不影响原计划可执行性。"""
+    """三轮 AC-028 语义：复审补充无效调用 → 安全停止（不静默执行可能不完整的初始计划）。"""
     session = await open_session(signed_in, image=poster_image())
     fake_planner(
         tool_call("flip_layer", {"direction": "horizontal"}),
         tool_call("no_such_tool", {"x": 1}),
     )
     turn = await send(signed_in, session["id"], "水平翻转")
-    assert [s["tool"] for s in turn["steps"]] == ["flip_layer"]
-    assert turn["status"] in {"running", "succeeded"}, turn.get("error")
+    assert turn["steps"] == []
+    assert "不完整" in turn["reply"] or "重新" in turn["reply"] or "换" in turn["reply"]
+    updated = (await signed_in.get(f"/api/sessions/{session['id']}")).json()
+    assert layers_of(updated)["base"]["transform"]["scale_x"] == 1  # 未执行
 
 
 # ---- E2E-F03：跨轮产物引用（from_previous 回退到上一轮产物） ----
@@ -612,6 +616,366 @@ async def test_replace_region_edits_previous_product_into_wall(
     # 画布未动、原海报字节未变（禁止静默改原图）
     assert after["revision"] == revision_before
     assert await asset_bytes_of(poster) == poster_bytes
+
+
+# ---- 三轮 AC-026～032：语义防重、有意重复、双向完整性、固定来源 ----
+
+
+async def plan_of(turn_id: str) -> list[dict]:
+    from app.models import AgentRun as _Run
+
+    async with SessionFactory() as db:
+        run = await db.get(_Run, uuid.UUID(turn_id))
+        return run.plan
+
+
+
+async def test_review_semantic_dedupe_omitted_vs_null(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """AC-026：初始翻转省略 layer_id、复审回显显式 null → 语义等价只执行一次。"""
+    session = await open_session(signed_in, image=poster_image())
+    fake_planner(
+        tool_call("flip_layer", {"direction": "horizontal"}),
+        tool_call("flip_layer", {"direction": "horizontal", "layer_id": None}),
+    )
+    turn = await send(signed_in, session["id"], "水平翻转一次")
+    finished = await settle(signed_in, session["id"])
+
+    assert finished["status"] == "succeeded", finished.get("error")
+    updated = (await signed_in.get(f"/api/sessions/{session['id']}")).json()
+    base = layers_of(updated)["base"]
+    assert base["transform"]["scale_x"] == -1  # 只翻转一次（两次会回到 +1）
+
+
+def layers_of(session_body: dict) -> dict:
+    return {layer["id"]: layer for layer in session_body["document"]["layers"]}
+
+
+async def test_review_semantic_dedupe_generation_not_double_billed(
+    signed_in: httpx.AsyncClient, fake_planner, edit_requests: list
+):
+    """AC-026：生成类工具回显（含默认值差异）也不重复计费。"""
+    session = await open_session(signed_in, image=poster_image())
+    fake_planner(
+        tool_calls(("generate_marketing", {"kind": "poster", "count": 1, "caption": "新品"})),
+        tool_calls(
+            (
+                "generate_marketing",
+                {"kind": "poster", "count": 1, "caption": "新品", "previous_index": None},
+            ),
+        ),
+    )
+    turn = await send(signed_in, session["id"], "生成一张新品海报，只要1张")
+    finished = await settle(signed_in, session["id"])
+    assert finished["status"] == "succeeded", finished.get("error")
+    assert len(finished["steps"]) == 1  # 一步而非两步
+    assert len(edit_requests) == 1  # 只发起一次生成
+
+
+async def test_review_keeps_intentional_repeated_rotations(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """AC-027：用户明确要求两次 90°，初始计划已含两步，复审回显不得折叠成一步。"""
+    session = await open_session(signed_in, image=poster_image())
+    fake_planner(
+        tool_calls(
+            ("rotate_layer", {"angle": 90, "layer_id": "base"}),
+            ("rotate_layer", {"angle": 90, "layer_id": "base"}),
+        ),
+        tool_call("rotate_layer", {"angle": 90, "layer_id": "base"}),
+    )
+    turn = await send(signed_in, session["id"], "把底图顺时针旋转90度两次，一共两次")
+    assert len(turn["steps"]) == 2, turn
+    if turn["status"] == "queued":
+        await signed_in.post(f"/api/sessions/{session['id']}/messages/{turn['id']}/confirm")
+    finished = await settle(signed_in, session["id"])
+    assert finished["status"] == "succeeded", finished.get("error")
+    updated = (await signed_in.get(f"/api/sessions/{session['id']}")).json()
+    assert layers_of(updated)["base"]["transform"]["rotation"] == 180
+
+
+async def test_review_invalid_addition_stops_incomplete_plan(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """AC-028：初始计划缺第二项、复审补充无效（未知工具）→ 安全停止，不执行首项冒充完成。"""
+    session = await open_session(signed_in, image=poster_image())
+    fake_planner(
+        tool_calls(("generate_marketing", {"kind": "poster", "count": 1, "caption": "新品"})),
+        tool_calls(("no_such_tool", {"x": 1})),
+    )
+    turn = await send(signed_in, session["id"], "先生成海报再出尺寸，请分两步")
+    assert turn["steps"] == []
+    assert "不完整" in turn["reply"] or "重新" in turn["reply"] or "换" in turn["reply"]
+    # 首项也没有被执行：会话没有任何营销图产物
+    wall = (await signed_in.get(f"/api/sessions/{session['id']}")).json()["assets"]
+    assert not [a for a in wall if a["kind"] == "marketing"]
+
+
+async def test_review_failure_stops_plan(
+    signed_in: httpx.AsyncClient, fake_planner, monkeypatch
+):
+    """AC-028：复审调用本身失败（一次重试仍失败）→ 安全停止，不静默执行初始计划。"""
+    from app.agent import graph as graph_module
+
+    session = await open_session(signed_in, image=poster_image())
+    calls = {"n": 0}
+
+    class FlakyPlanner:
+        async def ainvoke(self, messages):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                from langchain_core.messages import AIMessage as _M
+
+                return _M(
+                    content="",
+                    tool_calls=[{"name": "flip_layer", "args": {"direction": "horizontal"}, "id": "c1"}],
+                )
+            raise RuntimeError("planner down")
+
+    monkeypatch.setattr(graph_module, "planner", lambda: FlakyPlanner())
+    turn = await send(signed_in, session["id"], "水平翻转")
+    assert turn["steps"] == []
+    assert calls["n"] == 3  # 初始 + 复审 + 一次重试
+    updated = (await signed_in.get(f"/api/sessions/{session['id']}")).json()
+    assert layers_of(updated)["base"]["transform"]["scale_x"] == 1  # 未执行
+
+
+async def test_review_blocks_unauthorized_additions(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """AC-029：改黄被加隐藏层 → 无依据步骤不放行；初始步骤照常执行。"""
+    session = await open_session(signed_in, image=poster_image())
+    fake_planner(
+        tool_call("replace_region", {"prompt": "改成明黄色"}),
+        tool_calls(
+            ("set_layer_visible", {"visible": False, "layer_id": "base"}),
+        ),
+    )
+    turn = await send(signed_in, session["id"], "把主体改成明黄色")
+    assert [s["tool"] for s in turn["steps"]] == ["replace_region"]
+    finished = await settle(signed_in, session["id"])
+    assert finished["status"] == "succeeded", finished.get("error")
+    updated = (await signed_in.get(f"/api/sessions/{session['id']}")).json()
+    assert layers_of(updated)["base"]["visible"] is True  # 未被隐藏
+
+
+async def test_review_blocks_unrelated_split_addition(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """AC-029：海报计划被复审加拆层（无变体/提层步骤依赖）→ 拆层被丢弃。"""
+    session = await open_session(signed_in, image=poster_image())
+    fake_planner(
+        tool_calls(("generate_marketing", {"kind": "poster", "count": 1, "caption": "新品"})),
+        tool_calls(("split_layers", {})),
+    )
+    turn = await send(signed_in, session["id"], "生成一张新品海报")
+    assert [s["tool"] for s in turn["steps"]] == ["generate_marketing"]
+    finished = await settle(signed_in, session["id"])
+    assert finished["status"] == "succeeded", finished.get("error")
+    updated = (await signed_in.get(f"/api/sessions/{session['id']}")).json()
+    assert len(updated["document"]["layers"]) == 1  # 未拆层
+
+
+async def test_review_allows_split_prerequisite_before_variants(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """AC-029 正例：未拆层多颜色，复审补拆层 → 作为前置插到变体之前，两步可执行。"""
+    session = await open_session(signed_in, image=scene())
+    fake_planner(
+        tool_calls(("create_color_variants", {"colors": ["红色"]})),
+        tool_calls(("split_layers", {})),
+    )
+    turn = await send(signed_in, session["id"], "把主体变成红色，各一个主体")
+    assert [s["tool"] for s in turn["steps"]] == ["split_layers", "create_color_variants"]
+    # 确认后两步全执行（mock 拆层 + 变体）
+    if turn["status"] == "queued":
+        await signed_in.post(f"/api/sessions/{session['id']}/messages/{turn['id']}/confirm")
+    finished = await settle(signed_in, session["id"])
+    assert finished["status"] == "succeeded", finished.get("error")
+    updated = (await signed_in.get(f"/api/sessions/{session['id']}")).json()
+    assert [l for l in updated["document"]["layers"] if l["id"].startswith("variant-")]
+
+
+async def test_retry_keeps_pinned_source_after_new_product(
+    signed_in: httpx.AsyncClient, fake_planner, edit_requests: list, monkeypatch
+):
+    """AC-030：首次解析固定来源后，期间产生新产物，重试不得换图。"""
+    from app.providers.base import ProviderError
+    from app.providers.mock import MockImageProvider
+
+    session = await open_session(signed_in, image=poster_image())
+    fake_planner(
+        tool_calls(("generate_marketing", {"kind": "poster", "count": 1, "caption": "一"}))
+    )
+    await send(signed_in, session["id"], "生成海报A")
+    done1 = await settle(signed_in, session["id"])
+    poster_a = (
+        (await signed_in.get(f"/api/runs/{done1['steps'][0]['run_id']}")).json()["result"]
+    )["asset_ids"][0]
+    bytes_a = await asset_bytes_of(poster_a)
+
+    # 改蓝引用 A，但首次执行失败（Provider 一次性故障）
+    state = {"fail": True}
+    original_edit = MockImageProvider.edit
+
+    async def flaky(self, request, on_progress=None):
+        if state["fail"]:
+            raise ProviderError("模型超时")
+        return await original_edit(self, request, on_progress)
+
+    monkeypatch.setattr(MockImageProvider, "edit", flaky)
+    fake_planner(tool_calls(("replace_region", {"prompt": "改成蓝色", "from_previous": True})))
+    await send(signed_in, session["id"], "把刚才的海报改成蓝色")
+    turn2 = await settle(signed_in, session["id"])
+    assert turn2["status"] == "failed", turn2.get("error")
+    plan2 = await plan_of(turn2["id"])
+    assert plan2[0]["params"]["source_asset_id"] == poster_a  # 已固定 A
+
+    # 期间又生成了新海报 B
+    state["fail"] = False
+    fake_planner(
+        tool_calls(("generate_marketing", {"kind": "poster", "count": 1, "caption": "二"}))
+    )
+    await send(signed_in, session["id"], "再生成海报B")
+    await settle(signed_in, session["id"])
+
+    # 重试旧轮：仍消费 A（不换 B）
+    await signed_in.post(f"/api/sessions/{session['id']}/messages/{turn2['id']}/retry")
+    from app.tasks.tools import run_tool as _run
+
+    for _ in range(3):
+        plan_now = await plan_of(turn2["id"])
+        step_now = plan_now[0]
+        if step_now["status"] in {"queued", "running"} and step_now.get("run_id"):
+            await _run({}, uuid.UUID(step_now["run_id"]))
+        else:
+            break
+    retried_plan = await plan_of(turn2["id"])
+    assert retried_plan[0]["status"] == "succeeded"
+    params = await run_params_of(retried_plan[0]["run_id"])
+    assert params["source_asset_id"] == poster_a
+    assert edit_requests[-1].image == bytes_a
+
+
+async def test_latest_products_include_batch_outputs(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """AC-031：批量 items[].output_ids 也是合法「上一轮产物」，且最新优先于旧海报。"""
+    from tests.canvas import apply
+
+    session = await open_session(signed_in, image=poster_image((320, 240), (10, 10, 10)))
+    fake_planner(
+        tool_calls(("generate_marketing", {"kind": "poster", "count": 1, "caption": "旧海报"}))
+    )
+    await send(signed_in, session["id"], "生成旧海报")
+    await settle(signed_in, session["id"])
+
+    # 会话内批量换背景 count=2 → items 两个输出
+    await apply(
+        signed_in,
+        session["id"],
+        "batch_process",
+        {
+            "asset_ids": [session["current_asset_id"]],
+            "operations": [{"tool": "replace_background", "params": {"prompt": "纯白", "count": 2}}],
+            "formats": ["png"],
+        },
+    )
+
+    fake_planner(tool_calls(("prepare_delivery_sizes", {"from_previous": True})))
+    await send(signed_in, session["id"], "对刚才的产物出尺寸")
+    turn = await settle(signed_in, session["id"])
+    # 批量产出 2 张且未指明索引 → 明确报错列出张数，不静默用旧海报
+    assert turn["status"] == "failed"
+    assert "2" in (turn["error"] or "") and "previous_index" in (turn["error"] or "")
+
+
+async def test_latest_products_batch_with_index_picks_nth(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """AC-031：批量产物 + previous_index=2 → 取第二个输出。"""
+    from tests.canvas import apply
+
+    session = await open_session(signed_in, image=poster_image((320, 240), (10, 10, 10)))
+    batch_run = await apply(
+        signed_in,
+        session["id"],
+        "batch_process",
+        {
+            "asset_ids": [session["current_asset_id"]],
+            "operations": [{"tool": "replace_background", "params": {"prompt": "纯白", "count": 2}}],
+            "formats": ["png"],
+        },
+    )
+    from app.models import ToolRun
+
+    async with SessionFactory() as db:
+        stored = (
+            await db.scalars(
+                _select_toolrun(ToolRun).where(
+                    ToolRun.session_id == uuid.UUID(session["id"]),
+                    ToolRun.tool == "batch_process",
+                )
+            )
+        ).first()
+        batch_outputs = list(stored.result["items"][0]["output_ids"])
+
+    fake_planner(
+        tool_calls(("prepare_delivery_sizes", {"from_previous": True, "previous_index": 2}))
+    )
+    await send(signed_in, session["id"], "对刚才批量结果的第二张出尺寸")
+    turn = await settle(signed_in, session["id"])
+    assert turn["status"] == "succeeded", turn.get("error")
+    params = await run_params_of(turn["steps"][0]["run_id"])
+    assert params["source_asset_id"] == batch_outputs[-1]
+
+
+async def test_pinned_source_invalidated_fails_explicitly(
+    signed_in: httpx.AsyncClient, fake_planner, monkeypatch
+):
+    """AC-032：固定来源被隐藏删除后重试 → 明确失败，不换图、不回落画布。"""
+    from app.providers.base import ProviderError
+    from app.providers.mock import MockImageProvider
+
+    session = await open_session(signed_in, image=poster_image())
+    fake_planner(
+        tool_calls(("generate_marketing", {"kind": "poster", "count": 1, "caption": "海报"}))
+    )
+    await send(signed_in, session["id"], "生成海报")
+    done1 = await settle(signed_in, session["id"])
+    poster = (
+        (await signed_in.get(f"/api/runs/{done1['steps'][0]['run_id']}")).json()["result"]
+    )["asset_ids"][0]
+
+    state = {"fail": True}
+    original_edit = MockImageProvider.edit
+
+    async def flaky(self, request, on_progress=None):
+        if state["fail"]:
+            raise ProviderError("模型超时")
+        return await original_edit(self, request, on_progress)
+
+    monkeypatch.setattr(MockImageProvider, "edit", flaky)
+    fake_planner(tool_calls(("replace_region", {"prompt": "改成蓝色", "from_previous": True})))
+    await send(signed_in, session["id"], "把刚才的海报改成蓝色")
+    turn2 = await settle(signed_in, session["id"])
+    assert turn2["status"] == "failed"
+
+    # 海报仅被失败历史引用 → 隐藏式删除成功
+    deleted = await signed_in.delete(f"/api/assets/{poster}")
+    assert deleted.status_code in (204, 200), deleted.text
+
+    state["fail"] = False
+    await signed_in.post(f"/api/sessions/{session['id']}/messages/{turn2['id']}/retry")
+    retried = await settle(signed_in, session["id"])
+    assert retried["status"] == "failed"
+    error = retried.get("error") or ""
+    assert "不存在" in error or "不可用" in error or "不可访问" in error
+    plan_retried = await plan_of(retried["id"])
+    assert plan_retried[0]["params"]["source_asset_id"] == poster  # 未换源
+    updated = (await signed_in.get(f"/api/sessions/{session['id']}")).json()
+    assert updated["revision"] == session["revision"]  # 画布未动
 
 
 # ---- E2E-F03 辅助：历史摘要携带产物信息 ----
