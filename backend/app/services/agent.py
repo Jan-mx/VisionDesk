@@ -67,6 +67,14 @@ async def describe(
     if history:
         parts.append(f"最近对话（旧→新）：{'；'.join(history)}")
 
+    latest_product = await _latest_products(session, record.id)
+    if latest_product:
+        tool_name, produced = latest_product
+        parts.append(
+            f"上一轮产物 {len(produced)} 张（{tool_name}，"
+            "对它继续处理时用 from_previous=true，不要改用当前画布）"
+        )
+
     wall = await processable_wall_assets(session, record)
     if wall:
         kinds: dict[str, int] = {}
@@ -368,12 +376,14 @@ class PlanInputError(Exception):
 
 
 async def _resolve_step_input(
-    session: AsyncSession, steps: list[dict], step: dict
+    session: AsyncSession, session_id: uuid.UUID, steps: list[dict], step: dict
 ) -> dict:
-    """解析 from_previous 步骤的输入来源：最近的已成功前置步骤的指定产物（AER-FR-003）。
+    """解析 from_previous 步骤的输入来源（AER-FR-003 / E2E-F03）。
 
-    引用随 plan 持久化（解析结果写回 params），刷新与 Worker 重启后不依赖内存；
-    单步重试时上游已成功不重跑，直接复用其产物。
+    优先取本计划内最近已成功前置步骤的产物；跨轮引用（上一轮生成的海报等）
+    回退到本会话最近一条有图片产物的已成功任务。引用随 plan 持久化（解析结果
+    写回 params），刷新与 Worker 重启后不依赖内存；单步重试时上游已成功不重跑。
+    绝不回落当前画布、不猜 UUID、多产物未指明序号时明确报错。
     """
     params = step["params"]
     if not params.get("from_previous"):
@@ -388,16 +398,20 @@ async def _resolve_step_input(
         None,
     )
     if upstream is None:
-        raise PlanInputError("要衔接的前置步骤还没有成功结果，无法引用它的产物")
-    run = await session.get(ToolRun, uuid.UUID(upstream["run_id"]))
-    produced = ((run.result if run else None) or {}).get("asset_ids") or []
-    if not produced:
-        raise PlanInputError("前置步骤没有可用的图片产物")
+        latest = await _latest_products(session, session_id)
+        if latest is None:
+            raise PlanInputError("要衔接的前置步骤还没有成功结果，无法引用它的产物")
+        produced = latest[1]
+    else:
+        run = await session.get(ToolRun, uuid.UUID(upstream["run_id"]))
+        produced = ((run.result if run else None) or {}).get("asset_ids") or []
+        if not produced:
+            raise PlanInputError("前置步骤没有可用的图片产物")
     if len(produced) > 1:
         index = params.get("previous_index")
         if index is None:
             raise PlanInputError(
-                f"前置步骤产生了 {len(produced)} 张图片，请说明用第几张（previous_index）"
+                f"上一步产生了 {len(produced)} 张图片，请说明用第几张（previous_index）"
             )
         if not isinstance(index, int) or not 1 <= index <= len(produced):
             raise PlanInputError(f"previous_index 超出范围（1 到 {len(produced)}）")
@@ -405,6 +419,21 @@ async def _resolve_step_input(
     else:
         chosen = produced[0]
     return {**params, "source_asset_id": chosen}
+
+
+async def _latest_products(session: AsyncSession, session_id: uuid.UUID) -> tuple | None:
+    """本会话最近一条产出图片的已成功工具任务：(工具名, 产物 ID 列表)。"""
+    result = await session.execute(
+        select(ToolRun.tool, ToolRun.result)
+        .where(ToolRun.session_id == session_id, ToolRun.status == RunStatus.SUCCEEDED)
+        .order_by(ToolRun.created_at.desc(), ToolRun.id.desc())
+        .limit(6)
+    )
+    for tool, run_result in result.all():
+        produced = ((run_result or {}).get("asset_ids")) or []
+        if produced:
+            return tool, produced
+    return None
 
 
 async def _advance(session: AsyncSession, turn: AgentRun) -> AgentRun:
@@ -417,7 +446,7 @@ async def _advance(session: AsyncSession, turn: AgentRun) -> AgentRun:
                 step["status"] = plan_mod.WAITING
                 continue
             try:
-                params = await _resolve_step_input(session, steps, step)
+                params = await _resolve_step_input(session, turn.session_id, steps, step)
             except PlanInputError as exc:
                 # 产物引用解析失败：步骤失败并带可读原因，绝不回落画布（AER-FR-003）
                 step["status"] = plan_mod.FAILED

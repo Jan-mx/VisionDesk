@@ -31,9 +31,15 @@ _SYSTEM = """你是电商图片修图助手，通过调用工具完成用户的�
   只有用户明确要求「从零生成/全新的画面」时才用 generate_image。
 - 用户要求同一物体/商品出多种颜色、每色各一个主体（如「红蓝黑各一只」）时，
   用 create_color_variants 并列出颜色列表；它基于当前主体生成独立图层。
+  它需要主体已是独立图层（拆层主体或点选的物体）：画布未拆层且无选区时，
+  先排 split_layers，再排 create_color_variants。
   不要用 generate_image 从零生成，也不要把多个颜色合成一张拼图交付。
+- 一句话里有多项要求（先…再…、…后…、并且…）时，把每一项都排成步骤一次给出，
+  不要只排第一项；后续步骤用到前面产物时加 from_previous=true。
 - 用户要对「刚生成的海报/上一张」继续处理（出尺寸、改文字等）时，
-  后一步工具加 from_previous=true 消费上一步产物。
+  后一步工具加 from_previous=true 消费上一步产物。跨轮也一样：
+  摘要「上一轮产物」就是上一轮生成的图，对它处理时仍用 from_previous=true，
+  不要改用当前画布。
 - 一句话要改多个图层时，按图层拆成多步，每步只填一个 layer_id。
 - 改颜色、换材质、换成某物用 replace_region 并点名 layer_id；
   只改整张背景才用 replace_background。adjust_image 只做明暗冷暖，不做改色。
@@ -53,6 +59,20 @@ _SYSTEM = """你是电商图片修图助手，通过调用工具完成用户的�
 当前画布：{context}"""
 
 _FALLBACK_REPLY = "没太理解这条指令，换个说法或说得更具体一些。"
+
+_REVIEW_SYSTEM = """你是修图计划复审员。核对用户指令与已排步骤：
+- 每一项要求都有对应步骤 → 不调用任何工具，直接回复：完整
+- 还有要求没有对应步骤 → 只为缺失的要求调用工具补步骤（可一次多个），
+  不要重复或改写已有步骤，不要为已覆盖的要求再调用
+
+用户指令：
+{goal}
+
+已排步骤：
+{steps}
+
+当前画布：{context}"""
+
 _REFUSAL_LIMIT = 60
 _CALL_LIKE = re.compile(r"^[a-z_][a-z0-9_]*\s*\(")
 _TOOL_USE_BLOCK = re.compile(r'^\[\s*\{\s*"type"\s*:\s*"tool_use"')
@@ -102,14 +122,70 @@ def _verify(state: AgentState) -> AgentState:
         return {"plan": [], "reply": f"这一步暂时执行不了：{exc}"}
 
 
+def _dedupe_steps(steps: list[dict]) -> list[dict]:
+    """按工具+参数去除完全重复的步骤，防复审回路造成重复执行与重复计费。"""
+    seen: set = set()
+    result = []
+    for step in steps:
+        key = (
+            step["tool"],
+            json.dumps(step.get("params") or {}, sort_keys=True, ensure_ascii=False),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(step)
+    return result
+
+
+async def _review(state: AgentState) -> AgentState:
+    """一次有界复审：逐项核对要求是否都有步骤，缺则补齐（E2E-F04）。
+
+    真实规划器对复合指令常只发第一个工具调用；复审在规划期补齐缺失步骤，
+    执行与计费仍发生在用户确认之后。复审重复已有步骤或给出无效调用时原样
+    丢弃，不破坏初始计划。
+    """
+    if not state["plan"]:
+        return {}
+    steps_summary = "\n".join(
+        f"{index}. {step['tool']} {json.dumps(step.get('params') or {}, ensure_ascii=False)}"
+        for index, step in enumerate(state["plan"], start=1)
+    )
+    message = await planner().ainvoke(
+        [
+            SystemMessage(
+                _REVIEW_SYSTEM.format(
+                    goal=state["goal"], steps=steps_summary, context=state["context"]
+                )
+            ),
+            HumanMessage("请复审。"),
+        ]
+    )
+    additions = [
+        {"tool": call["name"], "params": call.get("args") or {}}
+        for call in (message.tool_calls or [])
+    ]
+    if not additions:
+        return {}
+    merged = _dedupe_steps(list(state["plan"]) + additions)
+    if len(merged) == len(state["plan"]):
+        return {}
+    try:
+        return {"plan": validate(merged)}
+    except (UnknownTool, tool_service.InvalidParams, PlanError):
+        return {}  # 补充步骤无效：保留可执行的初始计划
+
+
 @lru_cache
 def _graph():
     builder = StateGraph(AgentState)
     builder.add_node("plan", _plan)
+    builder.add_node("review", _review)
     builder.add_node("verify", _verify)
 
     builder.add_edge(START, "plan")
-    builder.add_edge("plan", "verify")
+    builder.add_edge("plan", "review")
+    builder.add_edge("review", "verify")
     builder.add_edge("verify", END)
     return builder.compile()
 

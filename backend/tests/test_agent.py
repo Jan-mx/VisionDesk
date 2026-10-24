@@ -15,18 +15,30 @@ PROMPT = {"prompt": "浅木色桌面上的白色马克杯", "ratio": "1:1", "cou
 
 
 class FakePlanner:
-    def __init__(self, message: AIMessage) -> None:
-        self._message = message
+    """单响应保持旧行为；传多个消息则按调用次序依次返回（复审回路两段式）。
+
+    `.messages` 保持为首次（规划）调用的消息以兼容既有断言；`.all_messages` 记录全部调用。
+    """
+
+    def __init__(self, *messages: AIMessage) -> None:
+        self._messages = list(messages)
+        self._index = 0
+        self.messages: list = []
+        self.all_messages: list = []
 
     async def ainvoke(self, messages):
-        self.messages = messages
-        return self._message
+        self.all_messages.append(messages)
+        if not self.messages:
+            self.messages = messages
+        message = self._messages[min(self._index, len(self._messages) - 1)]
+        self._index += 1
+        return message
 
 
 @pytest.fixture
 def fake_planner(monkeypatch):
-    def install(message: AIMessage) -> FakePlanner:
-        fake = FakePlanner(message)
+    def install(message: AIMessage, *more: AIMessage) -> FakePlanner:
+        fake = FakePlanner(message, *more)
         monkeypatch.setattr(graph, "planner", lambda: fake)
         return fake
 

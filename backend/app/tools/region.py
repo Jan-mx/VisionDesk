@@ -1,4 +1,5 @@
 import io
+import uuid
 
 from PIL import Image, ImageFilter
 from pydantic import Field
@@ -7,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.edits.geometry import to_layer_mask
 from app.edits.split import EmptyCut, alpha_mask
 from app.layers import Layer, LayerDocument
-from app.models.asset import AssetKind
+from app.models.asset import AssetKind, AssetSource
 from app.models.tool_run import ToolRun
 from app.providers import EditRequest, get_image_provider
 from app.services import runs, selections
@@ -28,6 +29,14 @@ class RegionIn(LayerRef, MaskRef):
 
 class ReplaceRegionIn(LayerRef, MaskRef):
     prompt: str = Field(min_length=1, max_length=500)
+    from_previous: bool = Field(
+        default=False,
+        description="输入取上一步/上一轮的产物（如刚生成的海报）而不是当前画布",
+    )
+    previous_index: int | None = Field(
+        default=None, ge=1, description="上一步产物多张时指定用第几张"
+    )
+    source_asset_id: str | None = None  # 服务端解析注入，不暴露给模型
 
 
 # ROI 边距：给模型目标物周边的上下文，同时把改动范围约束在选区附近
@@ -154,6 +163,40 @@ async def _edit_region(session: AsyncSession, run: ToolRun, *, scoped: str, whol
     )
 
 
+async def _edit_previous_product(session: AsyncSession, run: ToolRun, *, prompt: str) -> dict:
+    """整图编辑上一步/上一轮的产物素材（E2E-F04：海报后改蓝）。
+
+    禁止静默改原图：输入素材与当前画布都不被修改，结果重应用原透明通道后
+    作为新素材进入图片墙；选区与产物来源互斥（选区只对当前画布有意义）。
+    """
+    from app import storage
+    from app.edits.mask import apply_masked
+    from app.services import assets
+
+    if run.params.get("mask_asset_id"):
+        raise ToolError("引用产物编辑暂不支持选区；请对当前画布使用选区，或去掉选区整图编辑")
+    asset = await assets.get_for_user(
+        session, run.user_id, uuid.UUID(run.params["source_asset_id"])
+    )
+    if asset is None:
+        raise ToolError("引用的上一步产物已不存在")
+    data = await storage.get(asset.storage_key)
+    image = Image.open(io.BytesIO(data))
+    await runs.report(session, run, 40, "编辑产物")
+    edited = (
+        await get_image_provider().edit(
+            EditRequest(prompt=prompt, image=data, width=image.width, height=image.height),
+            on_progress=lambda progress, stage: runs.report(session, run, progress, stage),
+        )
+    )[0]
+    merged = apply_masked(data, edited, alpha_mask(data))
+    await runs.report(session, run, 85, "保存结果")
+    created = await assets.create_from_bytes(
+        session, run.user_id, merged, AssetKind.GENERATED, AssetSource.TOOL
+    )
+    return {"asset_ids": [str(created.id)]}
+
+
 async def erase_region_exec(session: AsyncSession, run: ToolRun) -> dict:
     asked = run.params.get("prompt")
     return await _edit_region(
@@ -166,6 +209,12 @@ async def erase_region_exec(session: AsyncSession, run: ToolRun) -> dict:
 
 async def replace_region_exec(session: AsyncSession, run: ToolRun) -> dict:
     what = run.params["prompt"]
+    if run.params.get("source_asset_id"):
+        return await _edit_previous_product(
+            session,
+            run,
+            prompt=f"{what}。保持构图、透视与画幅不变，透明区域仍然透明。",
+        )
     return await _edit_region(
         session,
         run,
@@ -194,11 +243,12 @@ REPLACE_REGION = ToolSpec(
     description=(
         "按文字描述替换画面内容，改颜色、换材质、换成另一个物体都用它。"
         "有选区时只改选区内；用 layer_id 点名图层时改该层整层；两者都有取交集。"
-        "只需给出替换描述，不必确认选区是否点准。"
+        "对上一步/上一轮生成的产物（如刚出的海报）整图编辑时用 from_previous=true，"
+        "结果作为新素材进图片墙，不改当前画布。"
     ),
     params=ReplaceRegionIn,
     handler=replace_region_exec,
     queued=True,
     session_required=True,
-    agent_hidden=HIDDEN_MASK,
+    agent_hidden=HIDDEN_MASK + ("source_asset_id",),
 )
