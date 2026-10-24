@@ -12,6 +12,9 @@ const KIND_LABELS: Record<AssetKind, string> = {
   snapshot: '画布',
 }
 
+/** selector 返回的空集合必须引用稳定，否则 zustand v5 会无限重渲染 */
+const NO_SELECTION: string[] = []
+
 /** 会话内全部图片胶卷墙（复现 creative-v1 方案 A · 104px 高度独立滚动） */
 export default function ImageWall({
   assets,
@@ -38,13 +41,13 @@ export default function ImageWall({
     )
 
   const selectMode = useEditorUi((s) => s.wallSelectMode)
+  const selectedIds = useEditorUi((s) => s.wallSelectedIds)
   const toggleSelect = useEditorUi((s) => s.toggleWallSelect)
   const setSelectMode = useEditorUi((s) => s.setWallSelectMode)
   const clearSelection = useEditorUi((s) => s.clearWallSelection)
   // 勾选与多选模式都携带会话戳：切走会话后 store 里的旧选择不再生效（E2E-F02）
-  const scopedSelectedIds = useEditorUi((s) =>
-    s.wallSelectionFor === sessionId ? s.wallSelectedIds : [],
-  )
+  const wallSelectionFor = useEditorUi((s) => s.wallSelectionFor)
+  const scopedSelectedIds = wallSelectionFor === sessionId ? selectedIds : NO_SELECTION
   const selectableIds = new Set(
     visibleAssets
       .filter((asset) => ['original', 'generated', 'marketing', 'export'].includes(asset.kind))
