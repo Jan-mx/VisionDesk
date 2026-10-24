@@ -1,10 +1,10 @@
 import io
 
-from PIL import Image
+from PIL import Image, ImageFilter
 from pydantic import Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.edits.mask import apply_masked
+from app.edits.geometry import to_layer_mask
 from app.edits.split import EmptyCut, alpha_mask
 from app.layers import Layer, LayerDocument
 from app.models.asset import AssetKind
@@ -16,7 +16,6 @@ from app.tools.context import ToolError, document_of, require_session
 from app.tools.target import (
     layer_image,
     layer_under_mask,
-    mask_for_layer,
     resolve_target,
     selection_mask,
     write_layer_image,
@@ -31,6 +30,10 @@ class ReplaceRegionIn(LayerRef, MaskRef):
     prompt: str = Field(min_length=1, max_length=500)
 
 
+# ROI 边距：给模型目标物周边的上下文，同时把改动范围约束在选区附近
+_ROI_PAD_RATIO = 0.08
+
+
 def _target(document: LayerDocument, layer_id: str | None, mask: bytes | None) -> Layer:
     """点名了图层就改那一层；否则取选区下最上层，没选区就取最上层图像。"""
     if not layer_id and mask is not None:
@@ -38,18 +41,77 @@ def _target(document: LayerDocument, layer_id: str | None, mask: bytes | None) -
     return resolve_target(document, layer_id)
 
 
-def _region(source: bytes, mask: bytes | None, layer: Layer, canvas: tuple[int, int]) -> bytes:
-    """无选区就用该层透明通道当区域改整层；有选区则取与该层的交集。"""
+def _layer_luma_mask(
+    source: bytes, mask: bytes | None, layer: Layer, canvas: tuple[int, int]
+) -> Image.Image | None:
+    """无选区时用该层透明通道当区域（返回 None 表示改整层）；有选区取与该层的交集。"""
     if mask is None:
-        return alpha_mask(source)
+        return None
     try:
-        return mask_for_layer(mask, layer, canvas)
+        local = to_layer_mask(mask, layer, canvas)
     except EmptyCut as exc:
         raise ToolError("选区没有覆盖到该图层") from exc
+    if local.getbbox() is None:
+        raise ToolError("选区没有覆盖到该图层")
+    return local
+
+
+def _roi_box(luma: Image.Image, size: tuple[int, int]) -> tuple[int, int, int, int]:
+    """选区包围盒加比例边距并裁到层界内。"""
+    left, top, right, bottom = luma.getbbox()
+    pad = max(4, int(_ROI_PAD_RATIO * max(right - left, bottom - top)))
+    left = max(0, left - pad)
+    top = max(0, top - pad)
+    right = min(size[0], right + pad)
+    bottom = min(size[1], bottom + pad)
+    return (left, top, right, bottom)
+
+
+def _png(image: Image.Image) -> bytes:
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+async def _edit_roi(
+    session: AsyncSession,
+    run: ToolRun,
+    source: Image.Image,
+    luma: Image.Image,
+    scoped: str,
+) -> Image.Image:
+    """把选区裁成 ROI 发给模型：输入本身就带目标位置，不靠文字猜（AER-FR-004）。
+
+    只在 ROI 内做遮罩合成再原位贴回，区域外像素按构造保持原样。
+    """
+    box = _roi_box(luma, source.size)
+    roi = source.crop(box)
+    roi_mask = luma.crop(box)
+    edited = (
+        await get_image_provider().edit(
+            EditRequest(
+                prompt=(
+                    f"{scoped} 这张图是原图的目标区域裁剪，只改其中选中的物体，"
+                    "区域边缘以外的部分原样保留。"
+                ),
+                image=_png(roi),
+                width=roi.width,
+                height=roi.height,
+            ),
+            on_progress=lambda progress, stage: runs.report(session, run, progress, stage),
+        )
+    )[0]
+    result = Image.open(io.BytesIO(edited)).convert("RGBA")
+    if result.size != roi.size:
+        result = result.resize(roi.size, Image.Resampling.LANCZOS)
+    merged = Image.composite(result, roi, roi_mask.filter(ImageFilter.GaussianBlur(1.2)))
+    output = source.copy()
+    output.paste(merged, (box[0], box[1]))
+    return output
 
 
 async def _edit_region(session: AsyncSession, run: ToolRun, *, scoped: str, whole: str) -> dict:
-    """按「图层 × 选区」改一层：有选区只改选区内，没选区改整层。"""
+    """按「图层 × 选区」改一层：有选区发 ROI 裁图，没选区改整层。"""
     record = await require_session(session, run)
     if run.params.get("revision") not in (None, record.revision):
         raise ToolError("选区已过期，请重新选择")
@@ -59,25 +121,37 @@ async def _edit_region(session: AsyncSession, run: ToolRun, *, scoped: str, whol
     layer = _target(document, run.params.get("layer_id"), mask)
 
     await runs.report(session, run, 20, "读取图层")
-    source = await layer_image(session, record, layer)
-    local_mask = _region(source, mask, layer, (document.width, document.height))
+    source_bytes = await layer_image(session, record, layer)
+    source = Image.open(io.BytesIO(source_bytes)).convert("RGBA")
+    luma = _layer_luma_mask(source_bytes, mask, layer, (document.width, document.height))
+
     await runs.report(session, run, 40, "局部生成")
-    size = Image.open(io.BytesIO(source)).size
-    edited = (
-        await get_image_provider().edit(
-            EditRequest(
-                prompt=whole if mask is None else scoped,
-                image=source,
-                width=size[0],
-                height=size[1],
-            ),
-            on_progress=lambda progress, stage: runs.report(session, run, progress, stage),
-        )
-    )[0]
-    await runs.report(session, run, 85, "合并结果")
-    output = apply_masked(source, edited, local_mask)
+    if luma is not None:
+        output = await _edit_roi(session, run, source, luma, scoped)
+    else:
+        edited = (
+            await get_image_provider().edit(
+                EditRequest(
+                    prompt=whole,
+                    image=source_bytes,
+                    width=source.width,
+                    height=source.height,
+                ),
+                on_progress=lambda progress, stage: runs.report(session, run, progress, stage),
+            )
+        )[0]
+        await runs.report(session, run, 85, "合并结果")
+        from app.edits.mask import apply_masked
+
+        output = Image.open(
+            io.BytesIO(apply_masked(source_bytes, edited, alpha_mask(source_bytes)))
+        ).convert("RGBA")
+
+    await runs.report(session, run, 90, "写回图层")
     await selections.clear(record.id)
-    return await write_layer_image(session, run, record, layer.id, output, AssetKind.GENERATED)
+    return await write_layer_image(
+        session, run, record, layer.id, _png(output), AssetKind.GENERATED
+    )
 
 
 async def erase_region_exec(session: AsyncSession, run: ToolRun) -> dict:

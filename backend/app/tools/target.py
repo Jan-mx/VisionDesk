@@ -2,10 +2,13 @@ from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import storage
+from app.edits.geometry import footprint_corners, overlaps_rect, to_layer_mask
 from app.edits.mask import overlay_png, to_luma
+from app.edits.pixels import resize_to
 from app.edits.split import EmptyCut
 from app.layers import (
     BACKGROUND_LAYER_ID,
+    BASE_LAYER_ID,
     Layer,
     LayerDocument,
     LayerKind,
@@ -97,6 +100,50 @@ async def write_layer_image(
     return result
 
 
+async def write_flat_canvas(
+    session: AsyncSession,
+    run: ToolRun,
+    record: EditSession,
+    data: bytes,
+    kind: AssetKind,
+) -> dict:
+    """整画布编辑结果的写回：重建单层恒等变换文档（AER-FR-006）。
+
+    输入是已拍平的画布图（旧变换只应用了这一次）；写回原层会保留旧 transform，
+    下次渲染再变换一次导致翻转/缩放重复。重建为画幅同尺寸的底图层，
+    文字层随拍平烘焙成像素，undo 可整体回滚。
+    """
+    document = document_of(record)
+    source = next(
+        (layer for layer in reversed(document.layers) if layer.kind is LayerKind.IMAGE),
+        None,
+    )
+    fitted = resize_to(data, document.width, document.height)
+    asset = await assets.create_from_bytes(
+        session, run.user_id, fitted, kind, AssetSource.TOOL
+    )
+    rebuilt = LayerDocument(
+        width=document.width,
+        height=document.height,
+        layers=[
+            Layer(
+                id=(source.id if source else BASE_LAYER_ID),
+                kind=LayerKind.IMAGE,
+                name=(source.name if source else "底图"),
+                width=document.width,
+                height=document.height,
+                asset_id=asset.id,
+                locked=(source.locked if source else True),
+            )
+        ],
+    )
+    return {
+        "document": rebuilt.model_dump(mode="json"),
+        "asset_ids": [str(asset.id)],
+        "adopt_asset_id": str(asset.id),
+    }
+
+
 def background_target(document: LayerDocument) -> Layer:
     for layer in document.layers:
         if layer.id == BACKGROUND_LAYER_ID and layer.kind is LayerKind.IMAGE:
@@ -105,25 +152,27 @@ def background_target(document: LayerDocument) -> Layer:
 
 
 def layer_under_mask(document: LayerDocument, mask: bytes) -> Layer:
-    """选区覆盖到的最上层图像；没有交集时退回默认图层。"""
+    """选区覆盖到的最上层图像；命中测试用与渲染一致的变换几何（AER-FR-005）。
+
+    矩形相交只看未变换包围盒会把旋转伸展出的对角漏掉、也会在角落空隙误命中，
+    这里对变换后的层四边形与选区包围盒做精确相交。
+    """
     luma = to_luma(mask, (document.width, document.height))
     box = luma.getbbox()
     if box is None:
         return resolve_layer(document, None)
-    left, top, right, bottom = box
+    rect = (box[0], box[1], box[2] - 1, box[3] - 1)
     for layer in reversed(document.layers):
         if layer.kind is not LayerKind.IMAGE or not layer.visible:
             continue
-        x, y = layer.transform.x, layer.transform.y
-        if right > x and left < x + layer.width and bottom > y and top < y + layer.height:
+        if overlaps_rect(footprint_corners(layer), rect):
             return layer
     return resolve_layer(document, None)
 
 
 def mask_for_layer(mask: bytes, layer: Layer, canvas: tuple[int, int]) -> bytes:
-    luma = to_luma(mask, canvas)
-    local = Image.new("L", (layer.width, layer.height), 0)
-    local.paste(luma, (-int(round(layer.transform.x)), -int(round(layer.transform.y))))
+    """画布选区遮罩逆变换到层本地坐标（缩放/旋转/翻转一致，AER-FR-005）。"""
+    local = to_layer_mask(mask, layer, canvas)
     if local.getbbox() is None:
         raise EmptyCut
     return overlay_png(local)

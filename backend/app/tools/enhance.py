@@ -13,7 +13,7 @@ from app.ratios import Ratio, cover_size
 from app.services import assets, runs
 from app.tools.base import ToolSpec
 from app.tools.context import document_of, flatten_session, require_session
-from app.tools.target import background_target, layer_image, write_layer_image
+from app.tools.target import background_target, layer_image, write_flat_canvas, write_layer_image
 
 
 class ReplaceBackgroundIn(BaseModel):
@@ -84,7 +84,10 @@ async def replace_background_exec(session: AsyncSession, run: ToolRun) -> dict:
     if run.params["count"] > 1 or wall_only:
         await runs.report(session, run, 95, "候选已加入图片墙，点选采用")
         return await _store(session, run, images, adopt_first=False)
-    kind = AssetKind.BACKGROUND if target.id == BACKGROUND_LAYER_ID else AssetKind.GENERATED
+    if target.id != BACKGROUND_LAYER_ID:
+        # 输入是拍平画布（旧变换已应用一次）：重建单层文档，避免写回原层再次变换
+        return await write_flat_canvas(session, run, record, images[0], AssetKind.GENERATED)
+    kind = AssetKind.BACKGROUND
     return await write_layer_image(session, run, record, target.id, images[0], kind)
 
 
