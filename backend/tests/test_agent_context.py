@@ -777,6 +777,38 @@ async def test_review_blocks_unrelated_split_addition(
     assert len(updated["document"]["layers"]) == 1  # 未拆层
 
 
+async def test_review_second_pass_rescues_deliveryless_plan(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """AC-028：初始只有前置类步骤（拆层）而无任何交付、复审首轮说完整 →
+    触发第二次复审，补出缺失的交付步骤，不得按拆层完成冒充整轮。"""
+    session = await open_session(signed_in, image=scene())
+    planner = fake_planner(
+        tool_calls(("split_layers", {})),
+        AIMessage(content="完整"),
+        tool_calls(("create_color_variants", {"colors": ["红色", "蓝色"]})),
+    )
+    turn = await send(signed_in, session["id"], "把主体变成红色和蓝色，各一个独立主体")
+    assert [s["tool"] for s in turn["steps"]] == ["split_layers", "create_color_variants"]
+    # 两次复审都发生了
+    assert len(planner.all_messages) == 3
+
+
+async def test_review_second_pass_allows_pure_split_request(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """AC-028 正例：用户真的只要拆层 → 两轮复审都完整 → 放行拆层单步。"""
+    session = await open_session(signed_in, image=scene())
+    planner = fake_planner(
+        tool_calls(("split_layers", {})),
+        AIMessage(content="完整"),
+        AIMessage(content="完整"),
+    )
+    turn = await send(signed_in, session["id"], "帮我把图层拆开")
+    assert [s["tool"] for s in turn["steps"]] == ["split_layers"]
+    assert len(planner.all_messages) == 3
+
+
 async def test_review_allows_split_prerequisite_before_variants(
     signed_in: httpx.AsyncClient, fake_planner
 ):

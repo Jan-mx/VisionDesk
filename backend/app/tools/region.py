@@ -61,18 +61,21 @@ def _layer_luma_mask(
 ) -> tuple[Image.Image, Image.Image] | None:
     """无选区时返回 None（改整层）；有选区返回 (羽化源, 合法域) 两个层本地遮罩。
 
-    羽化源用 BILINEAR 重采样保留软边；合法域取自「画布域(>0) 向内侵蚀后」的
-    NEAREST 重采样——层内只允许侵蚀域内的像素变化，其渲染足迹（含放大/旋转
-    插值）无法波及画布遮罩为零的位置（AC-034）。
+    羽化源用 BILINEAR 重采样保留软边；合法域取自「画布域(>0) 按层有效缩放放大后
+    向内侵蚀」的 NEAREST 重采样——LANCZOS 核宽按目标像素计 ±3，层被放大 k 倍时
+    一个层像素的画布影响半径约 ±3k，侵蚀半径随之放大（AC-034：放大/旋转/翻转后
+    的最终画布零遮罩像素逐字节不变）。
     """
     if mask is None:
         return None
     from app.edits.mask import to_luma
 
+    scale = max(abs(layer.transform.scale_x or 1), abs(layer.transform.scale_y or 1))
+    radius = max(_ERODE_RADIUS, int(_ERODE_RADIUS * scale) + 2)
     canvas_luma = to_luma(mask, canvas)
     eroded_domain = (
         canvas_luma.point(lambda v: 255 if v > 0 else 0)
-        .filter(ImageFilter.MinFilter(2 * _ERODE_RADIUS + 1))
+        .filter(ImageFilter.MinFilter(2 * radius + 1))
         .point(lambda v: 255 if v > 0 else 0)
     )
     try:

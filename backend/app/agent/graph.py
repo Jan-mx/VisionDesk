@@ -80,7 +80,22 @@ _REVIEW_SYSTEM = """你是修图计划复审员。核对用户指令与已排步
 _BLOCKED_ADDITION_TOOLS = {"set_layer_visible", "set_layer_opacity", "reorder_layer"}
 # 拆层只允许作为需要独立主体的工具的前置（AC-029）
 _NEEDS_SUBJECT_TOOLS = {"create_color_variants", "promote_object_to_layer"}
+# 只排前置/控制类步骤的计划没有任何交付物；复审首轮放行时需追问一次（AC-028）
+_PREREQUISITE_ONLY_TOOLS = {
+    "split_layers",
+    "promote_object_to_layer",
+    "set_layer_visible",
+    "set_layer_opacity",
+    "reorder_layer",
+    "move_layer",
+}
 _REVIEW_CLARIFY = "这条指令的计划可能不完整，自动补全没有成功：请拆成两句分别发送，或换一种说法。"
+_REVIEW_SECOND_CHANCE = """补充核对：已排步骤只有布局/结构类操作（如拆层、移动、显隐），
+执行完不会产生任何新的图像内容。逐项核对用户指令里要求的每一个交付
+（例如：多种颜色的独立主体、新生成的图、营销物料、投放尺寸、改色、替换）。
+规则：只要用户消息里出现任何图像内容类要求，而已排步骤不会产生它，
+就必须为它调用工具补步骤；只有用户消息纯粹只要求布局/结构操作时才回复：完整。
+拿不准时选择补步骤——补充会先展示给用户确认，可以取消。"""
 
 _REFUSAL_LIMIT = 60
 _CALL_LIKE = re.compile(r"^[a-z_][a-z0-9_]*\s*\(")
@@ -143,21 +158,19 @@ def _step_key(tool: str, canonical: dict) -> tuple[str, str]:
     return (tool, json.dumps(canonical, sort_keys=True, ensure_ascii=False))
 
 
-async def _review_call(state: AgentState):
+async def _review_call(state: AgentState, *, extra: str | None = None):
     """执行一次复审调用；异常返回 None（调用方决定重试或停止）。"""
     steps_summary = "\n".join(
         f"{index}. {step['tool']} {json.dumps(step.get('params') or {}, ensure_ascii=False)}"
         for index, step in enumerate(state["plan"], start=1)
     )
+    prompt = _REVIEW_SYSTEM.format(
+        goal=state["goal"], steps=steps_summary, context=state["context"]
+    )
+    if extra:
+        prompt = f"{prompt}\n\n{extra}"
     message = await planner().ainvoke(
-        [
-            SystemMessage(
-                _REVIEW_SYSTEM.format(
-                    goal=state["goal"], steps=steps_summary, context=state["context"]
-                )
-            ),
-            HumanMessage("请复审。"),
-        ]
+        [SystemMessage(prompt), HumanMessage("请复审。")]
     )
     return [
         {"tool": call["name"], "params": call.get("args") or {}}
@@ -177,13 +190,26 @@ async def _review(state: AgentState) -> AgentState:
     """
     if not state["plan"]:
         return {}
-    try:
-        additions = await _review_call(state)
-    except Exception:
+
+    async def call_review(extra: str | None = None):
         try:
-            additions = await _review_call(state)
+            return await _review_call(state, extra=extra)
         except Exception:
-            return {"plan": [], "reply": _REVIEW_CLARIFY}
+            try:
+                return await _review_call(state, extra=extra)
+            except Exception:
+                return None
+
+    additions = await call_review()
+    if additions is None:
+        return {"plan": [], "reply": _REVIEW_CLARIFY}
+    if not additions:
+        # 计划只有前置/控制类步骤时没有任何交付物：首轮复审放行不可信，
+        # 追问一次「执行完会出现用户要的结果吗」（AC-028，有界 ≤2 次复审）
+        if all(step["tool"] in _PREREQUISITE_ONLY_TOOLS for step in state["plan"]):
+            additions = await call_review(extra=_REVIEW_SECOND_CHANCE)
+            if additions is None:
+                return {"plan": [], "reply": _REVIEW_CLARIFY}
     if not additions:
         return {}
 
