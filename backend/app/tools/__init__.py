@@ -19,6 +19,7 @@ from app.tools.layers import PROMOTE_OBJECT, SPLIT_LAYERS
 from app.tools.marketing import GENERATE_MARKETING, PREPARE_DELIVERY_SIZES
 from app.tools.region import ERASE_REGION, REPLACE_REGION
 from app.tools.retouch import ADJUST_IMAGE, REMOVE_BACKGROUND
+from app.tools.variants import CREATE_COLOR_VARIANTS
 
 SPECS: tuple[ToolSpec, ...] = (
     GENERATE_IMAGE,
@@ -34,6 +35,7 @@ SPECS: tuple[ToolSpec, ...] = (
     GENERATE_MARKETING,
     PREPARE_DELIVERY_SIZES,
     BATCH_PROCESS,
+    CREATE_COLOR_VARIANTS,
     CROP_CANVAS,
     FLIP_LAYER,
     SET_LAYER_OPACITY,

@@ -29,6 +29,9 @@ _SYSTEM = """你是电商图片修图助手，通过调用工具完成用户的�
 - 摘要里的「最近对话」是上一轮的目标与结果。用户的续句（如「再来一份」「并要…」
   ）沿用上轮的主体、颜色与输出方式，除非明确改变意图；
   只有用户明确要求「从零生成/全新的画面」时才用 generate_image。
+- 用户要求同一物体/商品出多种颜色、每色各一个主体（如「红蓝黑各一只」）时，
+  用 create_color_variants 并列出颜色列表；它基于当前主体生成独立图层。
+  不要用 generate_image 从零生成，也不要把多个颜色合成一张拼图交付。
 - 用户要对「刚生成的海报/上一张」继续处理（出尺寸、改文字等）时，
   后一步工具加 from_previous=true 消费上一步产物。
 - 一句话要改多个图层时，按图层拆成多步，每步只填一个 layer_id。
@@ -114,10 +117,17 @@ def _graph():
 async def run(goal: str, context: str) -> tuple[str, list[dict]]:
     """规划并校验一轮指令，返回答复与尚未下发的计划。"""
     state = await _graph().ainvoke({"goal": goal, "context": context, "plan": [], "reply": ""})
-    return spoken(state["reply"], state["plan"]), state["plan"]
+    plan = state["plan"]
+    single_approval = len(plan) == 1 and any(
+        spec_of(step["tool"]).needs_approval for step in plan
+    )
+    return (
+        spoken(state["reply"], plan, confirm_first=single_approval or len(plan) > 1),
+        plan,
+    )
 
 
-def spoken(reply: str, plan: list[dict]) -> str:
+def spoken(reply: str, plan: list[dict], *, confirm_first: bool = False) -> str:
     """有计划就按步骤说话；没计划才用兜底或截成一句拒绝。"""
     text = (reply or "").strip()
     if plan:
@@ -126,6 +136,8 @@ def spoken(reply: str, plan: list[dict]) -> str:
         labels = "、".join(label_of(step["tool"], step.get("params")) for step in plan)
         if len(plan) > 1:
             return f"将按以下步骤执行：{labels}。确认后开始。"
+        if confirm_first:
+            return f"将{labels}，确认后开始。"
         return f"好，正在{labels}。"
     if _looks_internal(text):
         return _FALLBACK_REPLY

@@ -85,7 +85,10 @@ def settle(steps: list[dict]) -> str:
 
 
 def needs_confirm(steps: list[dict]) -> bool:
-    return len(steps) > 1
+    """多步计划，或含需审批工具（如多颜色变体）的单步计划，都先停下等确认。"""
+    if len(steps) > 1:
+        return True
+    return len(steps) == 1 and tool_service.spec_of(steps[0]["tool"]).needs_approval
 
 
 def mark_blocked(steps: list[dict]) -> list[dict]:

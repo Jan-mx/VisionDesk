@@ -281,9 +281,11 @@ async def confirm(session: AsyncSession, record: EditSession, turn_id: uuid.UUID
     waiting = [step for step in steps if step["status"] == plan_mod.WAITING]
     if turn.status is not RunStatus.QUEUED and not waiting:
         raise CannotConfirm
-    for step in waiting:
-        step["status"] = plan_mod.PENDING
-        step["approved"] = True
+    # 批准整轮未执行的步骤：审批标记写入 plan，needs_approval 工具据此放行
+    for step in steps:
+        if step["status"] in {plan_mod.PENDING, plan_mod.WAITING}:
+            step["status"] = plan_mod.PENDING
+            step["approved"] = True
     turn.plan = steps
     turn.status = RunStatus.RUNNING
     _touch(turn)
