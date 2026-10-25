@@ -1,8 +1,20 @@
 import uuid
+from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.user import UserRole
+
+UsernameStr = Annotated[str, Field(min_length=3, max_length=32)]
+PasswordStr = Annotated[str, Field(min_length=6, max_length=64)]
+
+
+def normalize_username(value: str) -> str:
+    """用户名规则：trim 后仅允许字母、数字、下划线（注册与后台改名共用，WI-20261025-02）。"""
+    normalized = value.strip()
+    if not normalized.replace("_", "").isalnum():
+        raise ValueError("用户名只能包含字母、数字和下划线")
+    return normalized
 
 
 class Credentials(BaseModel):
@@ -14,16 +26,13 @@ class Credentials(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    username: str = Field(min_length=3, max_length=32)
-    password: str = Field(min_length=6, max_length=64)
+    username: UsernameStr
+    password: PasswordStr
 
     @field_validator("username")
     @classmethod
     def _normalize(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized.replace("_", "").isalnum():
-            raise ValueError("用户名只能包含字母、数字和下划线")
-        return normalized
+        return normalize_username(value)
 
 
 class UserOut(BaseModel):

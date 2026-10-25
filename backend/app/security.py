@@ -93,13 +93,19 @@ def issue_deletion_token(
 
 
 def read_deletion_token(token: str) -> dict:
-    """校验签名与有效期，返回载荷；签名非法抛 PreviewTokenError，过期抛 PreviewTokenExpired。"""
+    """校验签名与有效期，返回载荷；签名非法抛 PreviewTokenError，过期抛 PreviewTokenExpired。
+
+    签名按规范化 base64 串全等比对，而不是解码后的字节：未填充 base64 的末字符
+    低 2 位会被解码器丢弃，按字节比较会接受同一摘要的非规范写法（签名可塑性，
+    如末位 'A'→'B' 仍通过 HMAC 比对，约 1/16 的篡改 token 被误收）。
+    """
     parts = token.split(".")
     if len(parts) != 2:
         raise PreviewTokenError("预览确认凭证格式非法")
     body, signature = parts
     expected = hmac.new(_preview_secret(), body.encode(), hashlib.sha256).digest()
-    if not hmac.compare_digest(expected, _b64decode(signature)):
+    expected_b64 = _b64encode(expected)
+    if not hmac.compare_digest(expected_b64.encode("ascii"), signature.encode("utf-8")):
         raise PreviewTokenError("预览确认凭证签名非法")
     try:
         payload = json.loads(_b64decode(body))

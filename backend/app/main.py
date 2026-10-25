@@ -3,7 +3,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import PurePosixPath
 
-from fastapi import APIRouter, FastAPI
+from fastapi import APIRouter, FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException
@@ -12,7 +14,7 @@ from starlette.responses import Response
 from app import storage
 from app.config import get_settings
 from app.queue import close_queue
-from app.routers import assets, auth, batches, events, health, runs, sessions
+from app.routers import admin, assets, auth, batches, events, health, runs, sessions
 
 settings = get_settings()
 
@@ -55,6 +57,7 @@ app = FastAPI(
 api = APIRouter(prefix="/api")
 api.include_router(health.router)
 api.include_router(auth.router)
+api.include_router(admin.router)
 api.include_router(assets.router)
 api.include_router(runs.router)
 api.include_router(sessions.router)
@@ -63,6 +66,28 @@ app.include_router(api)
 
 # SSE 不挂在 /api 下，便于反向代理单独关闭缓冲
 app.include_router(events.router)
+
+
+# 422 校验异常不得回显凭据原值（PRD §10）：pydantic 错误项的 input 字段会携带
+# 原输入，password 字段的错误项剔除 input；其余结构保持 FastAPI 默认不变。
+_SENSITIVE_ERROR_FIELDS = frozenset({"password"})
+
+
+def _redact_error(error: dict) -> dict:
+    loc = error.get("loc") or ()
+    if loc and loc[-1] in _SENSITIVE_ERROR_FIELDS:
+        return {key: value for key, value in error.items() if key != "input"}
+    return error
+
+
+@app.exception_handler(RequestValidationError)
+async def redacted_validation_error_handler(
+    _: Request, exc: RequestValidationError
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=422,
+        content={"detail": jsonable_encoder([_redact_error(error) for error in exc.errors()])},
+    )
 
 
 @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
