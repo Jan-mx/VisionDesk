@@ -48,10 +48,12 @@ def read_token(token: str) -> tuple[uuid.UUID, int | None] | None:
         return None
 
 
-# ---- 会话删除预览 token（PRD LIB-FR-015 / WI 决策 3）----
-# HMAC-SHA256，密钥从 jwt_secret 域分隔派生；不落库、不打日志。
+# ---- 删除预览 token（PRD LIB-FR-015 / WI 决策 3；账号删除为独立用途域）----
+# HMAC-SHA256，密钥从 jwt_secret 按域分隔派生；不落库、不打日志。
 PREVIEW_TTL = timedelta(minutes=5)
 _PREVIEW_DOMAIN = b"deletion-preview/v1"
+# 账号删除确认凭证域（WI-20261025-03 决策 3）：与会话删除凭证互不通用
+_ACCOUNT_PREVIEW_DOMAIN = b"account-deletion-preview/v1"
 
 
 class PreviewTokenError(Exception):
@@ -66,6 +68,12 @@ def _preview_secret() -> bytes:
     return hmac.new(get_settings().jwt_secret.encode(), _PREVIEW_DOMAIN, hashlib.sha256).digest()
 
 
+def _account_preview_secret() -> bytes:
+    return hmac.new(
+        get_settings().jwt_secret.encode(), _ACCOUNT_PREVIEW_DOMAIN, hashlib.sha256
+    ).digest()
+
+
 def _b64encode(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
 
@@ -74,25 +82,13 @@ def _b64decode(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def issue_deletion_token(
-    user_id: uuid.UUID, session_id: uuid.UUID, collection_digest: str, delete_digest: str
-) -> tuple[str, datetime]:
-    """签发绑定 user/session 与 C(X)/D(X) 摘要的确认凭证，返回 (token, expires_at)。"""
-    issued_at = datetime.now(UTC)
-    expires_at = issued_at + PREVIEW_TTL
-    payload = {
-        "u": str(user_id),
-        "s": str(session_id),
-        "c": collection_digest,
-        "d": delete_digest,
-        "iat": int(issued_at.timestamp()),
-    }
+def _issue(payload: dict, secret: bytes) -> str:
     body = _b64encode(json.dumps(payload, separators=(",", ":")).encode())
-    signature = _b64encode(hmac.new(_preview_secret(), body.encode(), hashlib.sha256).digest())
-    return f"{body}.{signature}", expires_at
+    signature = _b64encode(hmac.new(secret, body.encode(), hashlib.sha256).digest())
+    return f"{body}.{signature}"
 
 
-def read_deletion_token(token: str) -> dict:
+def _read(token: str, secret: bytes) -> dict:
     """校验签名与有效期，返回载荷；签名非法抛 PreviewTokenError，过期抛 PreviewTokenExpired。
 
     签名按规范化 base64 串全等比对，而不是解码后的字节：未填充 base64 的末字符
@@ -103,7 +99,7 @@ def read_deletion_token(token: str) -> dict:
     if len(parts) != 2:
         raise PreviewTokenError("预览确认凭证格式非法")
     body, signature = parts
-    expected = hmac.new(_preview_secret(), body.encode(), hashlib.sha256).digest()
+    expected = hmac.new(secret, body.encode(), hashlib.sha256).digest()
     expected_b64 = _b64encode(expected)
     if not hmac.compare_digest(expected_b64.encode("ascii"), signature.encode("utf-8")):
         raise PreviewTokenError("预览确认凭证签名非法")
@@ -115,3 +111,46 @@ def read_deletion_token(token: str) -> dict:
     if datetime.now(UTC) - issued_at > PREVIEW_TTL:
         raise PreviewTokenExpired
     return payload
+
+
+def issue_deletion_token(
+    user_id: uuid.UUID, session_id: uuid.UUID, collection_digest: str, delete_digest: str
+) -> tuple[str, datetime]:
+    """签发绑定 user/session 与 C(X)/D(X) 摘要的确认凭证，返回 (token, expires_at)。"""
+    issued_at = datetime.now(UTC)
+    payload = {
+        "u": str(user_id),
+        "s": str(session_id),
+        "c": collection_digest,
+        "d": delete_digest,
+        "iat": int(issued_at.timestamp()),
+    }
+    return _issue(payload, _preview_secret()), issued_at + PREVIEW_TTL
+
+
+def read_deletion_token(token: str) -> dict:
+    """校验会话删除凭证签名与有效期，返回载荷。"""
+    return _read(token, _preview_secret())
+
+
+def issue_account_deletion_token(
+    operator_id: uuid.UUID, target_id: uuid.UUID, username: str, scope_digest: str
+) -> tuple[str, datetime]:
+    """签发账号删除确认凭证（WI 决策 3）：绑定操作者/目标/当前用户名/范围摘要。
+
+    凭证本身不授予管理权限；确认时操作者与目标绑定不符即 422。
+    """
+    issued_at = datetime.now(UTC)
+    payload = {
+        "o": str(operator_id),
+        "t": str(target_id),
+        "u": username,
+        "s": scope_digest,
+        "iat": int(issued_at.timestamp()),
+    }
+    return _issue(payload, _account_preview_secret()), issued_at + PREVIEW_TTL
+
+
+def read_account_deletion_token(token: str) -> dict:
+    """校验账号删除凭证签名与有效期，返回载荷。"""
+    return _read(token, _account_preview_secret())

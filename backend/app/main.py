@@ -15,6 +15,7 @@ from app import storage
 from app.config import get_settings
 from app.queue import close_queue
 from app.routers import admin, assets, auth, batches, events, health, runs, sessions
+from app.services import guards
 
 settings = get_settings()
 
@@ -87,6 +88,16 @@ async def redacted_validation_error_handler(
     return JSONResponse(
         status_code=422,
         content={"detail": jsonable_encoder([_redact_error(error) for error in exc.errors()])},
+    )
+
+
+# 写入冻结屏障（WI-20261025-03 决策 2）：冻结账号的新增写入统一 409 account_deleting。
+# worker 路径不经过此处理器（tools.execute 自行兜底收尾，任务行允许落终态）。
+@app.exception_handler(guards.AccountDeleting)
+async def account_deleting_handler(_: Request, exc: guards.AccountDeleting) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content={"detail": {"code": "account_deleting", "message": str(exc) or "账号删除中"}},
     )
 
 

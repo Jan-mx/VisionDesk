@@ -2,12 +2,15 @@ import logging
 import uuid
 from collections import defaultdict
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import storage
-from app.models import Asset, EditSession, SessionAsset
+from app.db import SessionFactory
+from app.models import Asset, EditSession, PendingObjectWrite, SessionAsset, User
 from app.models.asset import UNMANAGEABLE_KINDS, AssetKind, AssetSource
+from app.models.pending_object_write import PendingWriteState
+from app.models.user import UserStatus
 from app.services import guards, runs
 from app.services.images import ImageMeta, probe
 from app.services.runs import ActiveTasks
@@ -40,6 +43,70 @@ def _storage_key(user_id: uuid.UUID, asset_id: uuid.UUID, extension: str) -> str
     return f"users/{user_id}/{asset_id}.{extension}"
 
 
+async def _register_pending_write(
+    user_id: uuid.UUID, storage_key: str, run_id: uuid.UUID | None, retries: int | None
+) -> uuid.UUID:
+    """写入屏障第一段（WI 决策 2a）：独立短事务检查并登记在途写入。
+
+    用户缺失 → StaleExecution（worker 迟到执行语义，tools.execute 静默丢弃）；
+    冻结（deleting）→ AccountDeleting；两种情形都不落登记行、不 PUT 对象。
+    登记与调用方事务解耦：登记一旦提交即跨进程可见，崩溃残留由恢复扫描回收。
+    """
+    async with SessionFactory() as session:
+        row = await session.execute(select(User.status).where(User.id == user_id))
+        current = row.first()
+        if current is None:
+            raise guards.StaleExecution(f"用户 {user_id} 不存在，对象写入被丢弃")
+        if current[0] is UserStatus.DELETING:
+            raise guards.AccountDeleting(f"账号 {user_id} 删除中，对象写入被拒绝")
+        pending = PendingObjectWrite(
+            user_id=user_id, storage_key=storage_key, run_id=run_id, retries=retries
+        )
+        session.add(pending)
+        await session.commit()
+        return pending.id
+
+
+async def _compensate_pending_write(pending_id: uuid.UUID, storage_key: str) -> None:
+    """写入屏障补偿（WI 决策 2c，锁外执行）：删除已上传对象并置登记行 aborted。
+
+    两步各自尽力而为：对象删除失败残留的孤儿与未终结的 registered 行
+    均由恢复扫描兜底回收（tasks/deletion.py）。
+    """
+    try:
+        await storage.delete(storage_key)
+    except Exception:  # noqa: BLE001 — 补偿失败不掩盖原拒绝异常，恢复扫描兜底
+        logger.warning("屏障补偿对象删除失败 storage_key=%s", storage_key, exc_info=True)
+    try:
+        async with SessionFactory() as session:
+            await session.execute(
+                update(PendingObjectWrite)
+                .where(
+                    PendingObjectWrite.id == pending_id,
+                    PendingObjectWrite.state == PendingWriteState.REGISTERED,
+                )
+                .values(state=PendingWriteState.ABORTED)
+            )
+            await session.commit()
+    except Exception:  # noqa: BLE001 — 恢复扫描兜底
+        logger.warning("屏障补偿登记行置 aborted 失败 pending_id=%s", pending_id, exc_info=True)
+
+
+async def _assert_user_writable(session: AsyncSession, user_id: uuid.UUID) -> None:
+    """写入屏障锁内重读（WI 决策 2c）：临界区内校验用户仍可写。
+
+    冻结（deleting）→ AccountDeleting；用户行已删 → StaleExecution。
+    必须先于 assert_writable 执行：屏障测试在 assert_writable 的暂停点注入
+    「校验后、提交前」冻结，重读放在其后会把迟到提交误判为拒绝。
+    """
+    row = await session.execute(select(User.status).where(User.id == user_id))
+    current = row.first()
+    if current is None:
+        raise guards.StaleExecution(f"用户 {user_id} 已删除，写入被丢弃")
+    if current[0] is UserStatus.DELETING:
+        raise guards.AccountDeleting(f"账号 {user_id} 删除中，写入被拒绝")
+
+
 async def create_from_bytes(
     session: AsyncSession,
     user_id: uuid.UUID,
@@ -48,32 +115,53 @@ async def create_from_bytes(
     source: AssetSource,
     meta: ImageMeta | None = None,
 ) -> Asset:
-    """校验图片、写入对象存储并落库。所有素材以 user_id 为前缀隔离。
+    """校验图片、登记在途写入、写入对象存储并落库（PRD §6.4 写入冻结屏障）。
 
-    S3 写入不持锁；落库事务与删除同锁串行，worker 迟到代次在此被丢弃。
+    屏障时序（WI-20261025-03 决策 2）：独立短事务查用户状态并登记（deleting 拒绝，
+    不落登记行不 PUT）→ storage.put（不持锁）→ 既有临界区内锁内重读用户状态 +
+    assert_writable 执行代次校验，被拒（迟到代次或冻结）→ 锁外补偿（删对象 +
+    置 aborted）；通过 → 资产行与登记行置 committed 同事务提交。S3 写入不持锁；
+    落库事务与删除同锁串行，worker 迟到代次在此被丢弃。
     """
     meta = meta or probe(data)
     asset_id = uuid.uuid4()
     key = _storage_key(user_id, asset_id, meta.extension)
 
-    await storage.put(key, data, meta.content_type)
-
-    await guards.user_lock(session, user_id)
-    await guards.assert_writable(session)
-    asset = Asset(
-        id=asset_id,
-        user_id=user_id,
-        kind=kind,
-        source=source,
-        storage_key=key,
-        image_format=meta.image_format,
-        width=meta.width,
-        height=meta.height,
-        size_bytes=meta.size_bytes,
-        has_alpha=meta.has_alpha,
-    )
-    session.add(asset)
-    await session.commit()
+    execution = guards.current_execution.get()
+    run_id, generation = execution if execution is not None else (None, None)
+    pending_id = await _register_pending_write(user_id, key, run_id, generation)
+    try:
+        await storage.put(key, data, meta.content_type)
+        try:
+            async with guards.critical(session, user_id):
+                await _assert_user_writable(session, user_id)
+                await guards.assert_writable(session)
+                asset = Asset(
+                    id=asset_id,
+                    user_id=user_id,
+                    kind=kind,
+                    source=source,
+                    storage_key=key,
+                    image_format=meta.image_format,
+                    width=meta.width,
+                    height=meta.height,
+                    size_bytes=meta.size_bytes,
+                    has_alpha=meta.has_alpha,
+                )
+                session.add(asset)
+                # 登记行与资产行同事务置 committed（WI 决策 2c）
+                await session.execute(
+                    update(PendingObjectWrite)
+                    .where(PendingObjectWrite.id == pending_id)
+                    .values(state=PendingWriteState.COMMITTED)
+                )
+        except (guards.AccountDeleting, guards.StaleExecution):
+            await _compensate_pending_write(pending_id, key)
+            raise
+    except Exception:
+        # 其余异常（如资产行落库 DB 故障）：对象与 registered 登记行交由
+        # 恢复扫描按超时回收（WI 决策 4d），此处不补偿以免误删重试语义。
+        raise
     return asset
 
 

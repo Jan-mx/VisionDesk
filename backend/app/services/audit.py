@@ -25,6 +25,9 @@ USER_RENAME = "user_rename"
 USER_RESET_PASSWORD = "user_reset_password"
 USER_DISABLE = "user_disable"
 USER_ENABLE = "user_enable"
+# 阶段 3 账号清理（WI-20261025-03 决策 6）
+USER_DELETE = "user_delete"
+DELETION_RETRY = "deletion_retry"
 
 RESULT_SUCCESS = "success"
 RESULT_REJECTED = "rejected"
@@ -68,8 +71,12 @@ def record(
     request_id: str,
     summary: dict | None = None,
     result: str = RESULT_SUCCESS,
+    operation_id: uuid.UUID | None = None,
 ) -> None:
-    """同事务写入：只 add 不 commit，由业务事务统一提交或回滚。"""
+    """同事务写入：只 add 不 commit，由业务事务统一提交或回滚。
+
+    operation_id 关联清理操作（FR-023 扩展）；summary 只允许白名单键值。
+    """
     session.add(
         AdminAuditLog(
             actor_id=actor_id,
@@ -79,6 +86,7 @@ def record(
             result=result,
             request_id=request_id,
             summary=_sanitize(summary),
+            operation_id=operation_id,
         )
     )
 

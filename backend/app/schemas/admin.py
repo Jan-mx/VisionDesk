@@ -10,8 +10,10 @@ from typing import Annotated, Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.models.account_deletion_operation import AccountDeletionStatus
 from app.models.user import UserRole, UserStatus
 from app.schemas.auth import Credentials, PasswordStr, UsernameStr, normalize_username
+from app.schemas.deletion import DeletionBlocker
 from app.services.paging import PageParams
 
 
@@ -87,3 +89,58 @@ class UserListParams(PageParams):
         if self.created_from and self.created_to and self.created_from > self.created_to:
             raise ValueError("created_from 不得晚于 created_to")
         return self
+
+
+# ---- 账号删除（WI-20261025-03 实现要求 3/7，PRD §8.3）----
+
+
+class DeletionCounts(BaseModel):
+    """预览计数：全量口径，不受列表页 limit、可见 kind 或隐藏状态影响。"""
+
+    sessions: int
+    history: int
+    tool_runs: int
+    agent_runs: int
+    assets: int
+    asset_record_bytes: int
+    objects: int
+    orphan_objects: int
+
+
+class AccountDeletionPreview(BaseModel):
+    """删除预览（ADM-FR-011）：blocked 时 preview_token 为空、blockers 可读。"""
+
+    user_id: uuid.UUID
+    username: str
+    counts: DeletionCounts
+    blocked: bool
+    blockers: list[DeletionBlocker]
+    preview_token: str | None
+    expires_at: datetime | None
+
+
+class DeletionOperationOut(BaseModel):
+    """清理操作视图：不含对象 key 清单（WI 实现要求 7）。"""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    target_user_id: uuid.UUID
+    status: AccountDeletionStatus
+    phase: str
+    progress_done: int
+    progress_total: int
+    attempt_count: int
+    created_at: datetime
+    updated_at: datetime
+    finished_at: datetime | None
+    failure_code: str | None
+    failure_detail: str | None
+
+
+class DeletionConfirmInput(BaseModel):
+    """确认删除请求体：管理员须输入目标当前用户名（PRD §6.3.4）。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    confirm_username: str

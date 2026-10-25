@@ -33,6 +33,14 @@ class StaleExecution(Exception):
     """执行代次已失效（任务被取消/回收/重试接管），写入必须丢弃。"""
 
 
+class AccountDeleting(Exception):
+    """目标账号已冻结（deleting），一切新增业务/产物写入被拒绝（WI-20261025-03 决策 2）。
+
+    API 路径映射为 409 account_deleting；worker 路径由 tools.execute 的失败兜底收尾
+    （此时任务行仍存在，finish 可正常落终态）。
+    """
+
+
 async def user_lock(session: AsyncSession, user_id: uuid.UUID) -> None:
     """在当前事务内取同用户互斥锁；随本事务 commit/rollback 自动释放。
 
@@ -61,6 +69,8 @@ async def assert_writable(session: AsyncSession) -> None:
 
     有上下文（worker 产物落库）时必须行存在、仍在 RUNNING 且代次一致，
     否则丢弃结果——被取消/回收/重试接管的旧执行不得写库（PRD §7.1）。
+    账号冻结校验由 create_from_bytes 在临界区内、本函数之前完成（WI 决策 2c
+    的锁内重读）；finish/apply_edit 等收尾路径不做冻结校验，已登记执行允许收尾。
     注意用 SELECT 强制落库：identity map 里的旧对象不反映其他连接的改动。
     """
     from sqlalchemy import select
