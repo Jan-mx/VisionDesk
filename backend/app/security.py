@@ -22,20 +22,28 @@ def verify_password(plain: str, hashed: str) -> bool:
     return bcrypt.checkpw(plain.encode(), hashed.encode())
 
 
-def issue_token(user_id: uuid.UUID) -> str:
+def issue_token(user_id: uuid.UUID, token_version: int) -> str:
+    """签发携带会话版本（ver）的 JWT；版本不匹配即视为已撤销。"""
     settings = get_settings()
     payload = {
         "sub": str(user_id),
+        "ver": token_version,
         "exp": datetime.now(UTC) + timedelta(hours=settings.jwt_ttl_hours),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=_ALGORITHM)
 
 
-def read_token(token: str) -> uuid.UUID | None:
-    """解析会话令牌，任何无效情形统一返回 None 交由调用方处理为未认证。"""
+def read_token(token: str) -> tuple[uuid.UUID, int | None] | None:
+    """解析会话令牌，返回 (user_id, ver)；无 ver 的旧格式令牌 ver=None（一律视为失效）。
+
+    任何无效情形统一返回 None 交由调用方处理为未认证。
+    """
     try:
         payload = jwt.decode(token, get_settings().jwt_secret, algorithms=[_ALGORITHM])
-        return uuid.UUID(payload["sub"])
+        ver = payload.get("ver")
+        if isinstance(ver, bool) or not isinstance(ver, int):
+            ver = None
+        return uuid.UUID(payload["sub"]), ver
     except (jwt.InvalidTokenError, KeyError, ValueError):
         return None
 

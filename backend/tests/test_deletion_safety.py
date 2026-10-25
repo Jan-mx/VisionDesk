@@ -489,10 +489,14 @@ async def test_asset_title_and_library_hidden_migration_round_trip():
     assert {"title", "library_hidden"} <= await _asset_columns()
 
     try:
-        await asyncio.to_thread(command.downgrade, config, "-1")
+        # 以 title/library_hidden 各自迁移的绝对 revision 为锚点降级（原为相对 -1）：
+        # 本测试钉的是「两列随各自迁移增删、其余列不受影响」，不是「head 之后的
+        # 迁移栈深度」；后续新迁移（如 WI-20261025-01 的 user_admin_fields）入列后
+        # 相对锚点不再指向这两列的迁移，断言本体不变。
+        await asyncio.to_thread(command.downgrade, config, "3f2a1c9d5e47")
         assert "title" in await _asset_columns()
         assert "library_hidden" not in await _asset_columns()
-        await asyncio.to_thread(command.downgrade, config, "-1")
+        await asyncio.to_thread(command.downgrade, config, "17d993e08c71")
         # 降级只移除命名字段，既有列不受影响
         assert "title" not in await _asset_columns()
         assert {"id", "user_id", "kind", "storage_key"} <= await _asset_columns()
