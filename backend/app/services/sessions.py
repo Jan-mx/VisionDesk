@@ -482,10 +482,13 @@ async def reference_map(session: AsyncSession, record: EditSession) -> dict[uuid
     except ValidationError as exc:
         raise ReferenceStateInvalid("画布文档无法解析") from exc
 
-    found: dict[uuid.UUID, set[str]] = {
-        record.original_asset_id: {"original"},
-        record.current_asset_id: {"current"},
-    }
+    found: dict[uuid.UUID, set[str]] = {}
+    # 原图与当前图可能同一素材（新建会话 original==current）：setdefault 合并，
+    # dict 字面量会在同键时覆盖丢失 "original"（WI-20261025-04 引用扫描口径：
+    # 素材作为原图/当前图的归属必须同时如实报告；阻断判定不受影响——
+    # 该情形此前已通过 "current" 阻断）
+    found.setdefault(record.original_asset_id, set()).add("original")
+    found.setdefault(record.current_asset_id, set()).add("current")
     for layer in document_layers:
         if layer.asset_id is not None:
             found.setdefault(layer.asset_id, set()).add("layer")

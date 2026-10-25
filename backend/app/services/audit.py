@@ -28,17 +28,24 @@ USER_ENABLE = "user_enable"
 # 阶段 3 账号清理（WI-20261025-03 决策 6）
 USER_DELETE = "user_delete"
 DELETION_RETRY = "deletion_retry"
+# 阶段 4 管理端素材（WI-20261025-04 决策 3/4/5）
+ASSET_RENAME = "asset_rename"
+ASSET_DELETE = "asset_delete"
 
 RESULT_SUCCESS = "success"
 RESULT_REJECTED = "rejected"
 RESULT_FAILED = "failed"
 
 TARGET_USER = "user"
+TARGET_ASSET = "asset"
 # target_type 全集（PRD §7）：user / asset / deletion_operation
-TARGET_TYPES = frozenset({TARGET_USER})
+TARGET_TYPES = frozenset({TARGET_USER, TARGET_ASSET})
 
 # summary 白名单键：仅稳定、可读、非敏感的最小变更摘要
-_SUMMARY_KEYS = frozenset({"username", "new_username", "status"})
+# （WI-20261025-04 决策 3/4 新增素材键 title/new_title/kind/reason）
+_SUMMARY_KEYS = frozenset(
+    {"username", "new_username", "status", "title", "new_title", "kind", "reason"}
+)
 _MAX_SUMMARY_VALUE = 200
 _MAX_REQUEST_ID = 64
 
@@ -132,6 +139,31 @@ async def record_rejected(
     """预期拒绝（409）：业务零写入后补记 result=rejected（脱敏）。"""
     await _record_detached(
         RESULT_REJECTED,
+        actor_id=actor_id,
+        target_type=target_type,
+        target_id=target_id,
+        action=action,
+        request_id=request_id,
+        summary=summary,
+    )
+
+
+async def record_committed(
+    *,
+    actor_id: uuid.UUID,
+    target_type: str,
+    target_id: uuid.UUID,
+    action: str,
+    request_id: str,
+    summary: dict | None = None,
+) -> None:
+    """独立事务补记成功审计（WI-20261025-04 决策 4/5）。
+
+    素材删除由服务临界区内部提交、调用方只拿到结果，业务事务不再开放，
+    审计随之另起事务落库；补记失败仅告警，不影响已提交的删除结果。
+    """
+    await _record_detached(
+        RESULT_SUCCESS,
         actor_id=actor_id,
         target_type=target_type,
         target_id=target_id,

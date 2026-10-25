@@ -7,14 +7,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import storage
 from app.db import SessionFactory
-from app.models import Asset, EditSession, PendingObjectWrite, SessionAsset, User
+from app.models import Asset, EditHistory, EditSession, PendingObjectWrite, SessionAsset, User
 from app.models.asset import UNMANAGEABLE_KINDS, AssetKind, AssetSource
 from app.models.pending_object_write import PendingWriteState
 from app.models.user import UserStatus
 from app.services import guards, runs
 from app.services.images import ImageMeta, probe
 from app.services.runs import ActiveTasks
-from app.services.sessions import ReferenceStateInvalid, references_of_user
+from app.services.sessions import (
+    ReferenceStateInvalid,
+    _collect_state,
+    reference_map,
+    references_of_user,
+)
 
 # 遮罩、抠图层是会话内部产物，创作页历史素材不单独摊开（= UNMANAGEABLE_KINDS）
 _WORKING = UNMANAGEABLE_KINDS
@@ -211,12 +216,106 @@ def _blocking_rows(
     return _reference_rows(blocking)
 
 
-def _in_use_reason(references: list[dict]) -> str:
+def in_use_reason(references: list[dict]) -> str:
+    """409 asset_in_use 的中文原因（用户端与管理端批删共用，WI-20261025-04 决策 5）。"""
     parts = []
     for reference in references:
         labels = "、".join(_TYPE_LABELS.get(kind, kind) for kind in reference["types"])
         parts.append(f"《{reference['title']}》的{labels}")
     return "素材仍被会话" + "；会话".join(parts) + "引用，请先删除对应会话"
+
+
+# ---- 管理端素材引用扫描（WI-20261025-04 决策 2，与用户端 R(X) 同口径）----
+
+
+async def scan_user_references(
+    session: AsyncSession, user_id: uuid.UUID, *, strict: bool = True
+) -> dict:
+    """单遍扫描某用户全部会话的 R(X) 引用与历史文档计数。
+
+    返回 {"assets": {asset_id: {"types": {session_id: set[str]}, "history_docs": int}},
+    "titles": {session_id: title}}；types 与 reference_map 同口径
+    （original/current/layer/history）；history_docs 统计 ``params.before`` 状态
+    （撤销可回退画布）中引用该素材的历史文档数。strict=False 时跳过无法解析的
+    会话（展示路径不因脏数据失败，删除路径保持 strict，与 references_of_user 一致）。
+    """
+    assets: dict[uuid.UUID, dict] = {}
+    titles: dict[uuid.UUID, str] = {}
+    records = list(
+        await session.scalars(select(EditSession).where(EditSession.user_id == user_id))
+    )
+    for record in records:
+        titles[record.id] = record.title
+        try:
+            found = await reference_map(session, record)
+        except ReferenceStateInvalid:
+            if strict:
+                raise
+            continue
+        for asset_id, types in found.items():
+            entry = assets.setdefault(asset_id, {"types": {}, "history_docs": 0})
+            entry["types"][record.id] = set(types)
+        # 历史文档计数：reference_map 已按同一结构校验过本会话全部条目
+        # （params 必为 dict、result 必为 dict、before/result 状态可解析），
+        # 此遍不会遇到新形态的脏数据；只统计 params.before——撤销可回退的
+        # 画布快照（create 条目无 before 不计，与专项测试基构一致）。
+        entries = list(
+            await session.scalars(
+                select(EditHistory).where(EditHistory.session_id == record.id)
+            )
+        )
+        for hist in entries:
+            before = (
+                hist.params.get("before")
+                if isinstance(hist.params, dict)
+                else None
+            )
+            if before is None:
+                continue
+            scratch: dict[uuid.UUID, set[str]] = {}
+            _collect_state(before, "history", scratch)
+            for asset_id in scratch:
+                assets.setdefault(asset_id, {"types": {}, "history_docs": 0})[
+                    "history_docs"
+                ] += 1
+    return {"assets": assets, "titles": titles}
+
+
+async def asset_references(
+    session: AsyncSession, asset: Asset, *, strict: bool = False
+) -> dict:
+    """素材全量引用拓扑（WI-20261025-04 决策 2）：与用户端 R(X) 同一口径，
+    全量扫描、不受任何页面过滤限制。
+
+    - original_of / current_of：引用该素材为原图/当前图的会话 id 集合（str）；
+    - layer_in：引用该素材的历史文档数（params.before 撤销可回退画布）；
+    - wall_sessions：图片墙关联会话 id 集合（墙关联不构成删除保护，仅展示）；
+    - active_tasks：同 owner 是否存在 queued/running 任务或待确认计划；
+    - types_by_session / session_titles：str 键视图，供管理端详情引用行与
+      计数摘要复用（id 以字符串呈现，会话拓扑对外的唯一形态）。
+    """
+    scan = await scan_user_references(session, asset.user_id, strict=strict)
+    entry = scan["assets"].get(asset.id) or {"types": {}, "history_docs": 0}
+    wall = set(
+        await session.scalars(
+            select(SessionAsset.session_id).where(SessionAsset.asset_id == asset.id)
+        )
+    )
+    return {
+        "original_of": {
+            str(sid) for sid, types in entry["types"].items() if "original" in types
+        },
+        "current_of": {
+            str(sid) for sid, types in entry["types"].items() if "current" in types
+        },
+        "layer_in": entry["history_docs"],
+        "wall_sessions": {str(sid) for sid in wall},
+        "active_tasks": await runs.has_active_tasks(session, asset.user_id),
+        "types_by_session": {
+            str(sid): set(types) for sid, types in entry["types"].items()
+        },
+        "session_titles": {str(sid): title for sid, title in scan["titles"].items()},
+    }
 
 
 async def _sweep_hidden(
@@ -345,7 +444,7 @@ async def batch_delete_for_user(
                 {
                     "id": asset_id,
                     "code": "asset_in_use",
-                    "reason": _in_use_reason(exc.references),
+                    "reason": in_use_reason(exc.references),
                 }
             )
             continue

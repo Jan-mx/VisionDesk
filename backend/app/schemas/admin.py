@@ -11,9 +11,11 @@ from typing import Annotated, Literal
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.account_deletion_operation import AccountDeletionStatus
+from app.models.asset import AssetKind, AssetSource
 from app.models.user import UserRole, UserStatus
+from app.schemas.asset import TITLE_MAX_CODEPOINTS
 from app.schemas.auth import Credentials, PasswordStr, UsernameStr, normalize_username
-from app.schemas.deletion import DeletionBlocker
+from app.schemas.deletion import DeletionBlocker, ReferenceOut
 from app.services.paging import PageParams
 
 
@@ -144,3 +146,86 @@ class DeletionConfirmInput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     confirm_username: str
+
+
+# ---- 管理端素材（WI-20261025-04，PRD §6.5/§8.1~8.3）----
+
+
+class AdminAssetPatchIn(BaseModel):
+    """管理端素材重命名（WI 决策 3）：沿用 title 规则——trim、空白归一 null、
+    ≤80 Unicode 码点（超长 422 不截断）；title 必填（缺失 422）、非字符串 422。
+
+    注意：先 trim 再校验长度（PRD §6.5 原文「trim、空值归一 null」）——
+    用户端 AssetPatchIn 只做空白归一不 trim，管理端不照抄该实现。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(max_length=TITLE_MAX_CODEPOINTS)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _trim_blank_to_none(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+
+class AdminAssetOut(BaseModel):
+    """管理端素材视图（PRD §8.3）：安全元信息（不含 storage_key）+ 归属 +
+    引用计数摘要 + 能力与稳定原因码；preview_url 为短期签名 URL（不入审计——
+    summary 白名单无此键）。列表与详情共用本模型保证逐字段一致（ADM-AC-036）。"""
+
+    id: uuid.UUID
+    kind: AssetKind
+    source: AssetSource
+    title: str | None
+    image_format: str
+    width: int
+    height: int
+    size_bytes: int
+    has_alpha: bool
+    created_at: datetime
+    user_id: uuid.UUID
+    username: str
+    library_hidden: bool
+    references_count: dict[str, int]
+    can_rename: bool
+    rename_blocker: str | None
+    can_delete: bool
+    delete_blocker: str | None
+    preview_url: str
+
+
+class AdminAssetDetailOut(AdminAssetOut):
+    """素材详情：另返回完整 references（session_id/title/types 引用行）。"""
+
+    references: list[ReferenceOut]
+
+
+class AdminAssetDeleteOut(BaseModel):
+    """单删结果两态（WI 决策 4）：deleted=物理删除；hidden=仅历史引用，
+    转隐藏式删除（行与对象保留供撤销/重做）。"""
+
+    id: uuid.UUID
+    status: Literal["deleted", "hidden"]
+
+
+class AdminAssetListParams(PageParams):
+    """GET /admin/assets 查询参数（PRD §8.2）：跨用户筛选 + 白名单排序
+    （created_at/size_bytes/title）+ 带时区时间区间（下含上不含、反向 422）。"""
+
+    sort: Literal["created_at", "size_bytes", "title"] = "created_at"
+    user_id: uuid.UUID | None = None
+    q: Annotated[str | None, Field(max_length=100)] = None
+    kind: AssetKind | None = None
+    source: AssetSource | None = None
+    library_hidden: bool | None = None
+    created_from: AwareDatetime | None = None
+    created_to: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def _time_range_order(self) -> "AdminAssetListParams":
+        if self.created_from and self.created_to and self.created_from > self.created_to:
+            raise ValueError("created_from 不得晚于 created_to")
+        return self

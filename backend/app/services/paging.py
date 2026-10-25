@@ -8,7 +8,7 @@
   空 items 与真实 total。
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -40,15 +40,26 @@ async def paginate(
     stmt: Select,
     params: PageParams,
     sort_map: Mapping[str, InstrumentedAttribute],
+    *,
+    nulls_last: Collection[str] = (),
 ) -> tuple[Sequence[Any], int]:
     """执行分页查询，返回 (rows, total)。
 
     stmt 应以单一 ORM 实体为第一个 select 目标（稳定排序取其 id 列），
-    统计列以相关子查询形式出现在 select 中。
+    统计列以相关子查询形式出现在 select 中。nulls_last 列出可空排序列名
+    （如素材 title）：这些列的空值行在 asc/desc 两个方向都稳定尾随
+    （WI-20261025-04 决策 1）。
     """
     column = sort_map[params.sort]
+    if params.sort in nulls_last:
+        order = (
+            column.asc().nulls_last()
+            if params.order == "asc"
+            else column.desc().nulls_last()
+        )
+    else:
+        order = column.asc() if params.order == "asc" else column.desc()
     entity = stmt.column_descriptions[0]["entity"]
-    order = column.asc() if params.order == "asc" else column.desc()
     id_order = entity.id.asc() if params.order == "asc" else entity.id.desc()
 
     # total 与列表同一过滤条件独立 count：包成子查询数行数，不受 select 中

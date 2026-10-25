@@ -1,4 +1,5 @@
-"""管理端用户维护端点（WI-20261025-02 实现要求 4~8；阶段 3 账号删除 WI-20261025-03）。
+"""管理端用户维护端点（WI-20261025-02 实现要求 4~8；阶段 3 账号删除 WI-20261025-03；
+阶段 4 管理端素材 WI-20261025-04）。
 
 全部端点先经 RequireAdmin 鉴权再访问目标；静态路径注册在 /{id} 之前；
 错误结构沿用 detail.code/message，404 不区分不存在原因。
@@ -9,6 +10,13 @@
 503 deletion_unavailable、零写入零审计；确认校验序为 签名/目标(422) → 确认名
 与凭证载荷(409) → 操作者(422) → 过期(409) → 目标用户锁内 重读用户名/重算范围
 摘要(409) / 活动任务(409) / 所有者保护(409) → 已有未终结操作幂等返回(202)。
+
+管理端素材（WI-20261025-04 决策 1~7）：列表/详情跨用户全量（含隐藏与内部
+派生），引用扫描与用户端同一口径（services/assets.py::asset_references）；
+单删/批删逐项直接调用 delete_for_user（不改其签名与语义，路由层映射两态
+响应与 409 原因），批删请求级全量核验（缺失整批 404 零写入）后逐项独立
+事务；动作留痕 asset_rename/asset_delete（批量只记实际删除项）；preview_url
+短期签名、不入审计。
 """
 
 import logging
@@ -29,9 +37,15 @@ from app.models.account_deletion_operation import (
     AccountDeletionOperation,
     AccountDeletionStatus,
 )
+from app.models.asset import UNMANAGEABLE_KINDS
 from app.models.user import UserStatus
 from app.schemas.admin import (
     AccountDeletionPreview,
+    AdminAssetDeleteOut,
+    AdminAssetDetailOut,
+    AdminAssetListParams,
+    AdminAssetOut,
+    AdminAssetPatchIn,
     AdminUserOut,
     AdminUserPatch,
     DeletionConfirmInput,
@@ -41,7 +55,14 @@ from app.schemas.admin import (
     UserListParams,
 )
 from app.schemas.auth import Credentials
-from app.schemas.deletion import DeletionBlocker
+from app.schemas.deletion import (
+    BatchDeleteIn,
+    BatchDeleteOut,
+    BatchSkippedItem,
+    DeletionBlocker,
+    DeletionErrorDetail,
+    ReferenceOut,
+)
 from app.security import (
     PreviewTokenError,
     PreviewTokenExpired,
@@ -50,7 +71,10 @@ from app.security import (
     read_account_deletion_token,
 )
 from app.services import account_deletion, audit, guards, paging, runs
+from app.services import assets as asset_service
 from app.services.paging import Page
+from app.services.runs import ActiveTasks
+from app.services.sessions import ReferenceStateInvalid
 
 logger = logging.getLogger(__name__)
 
@@ -637,3 +661,476 @@ async def retry_deletion_operation(
         media_type="application/json",
         status_code=status.HTTP_202_ACCEPTED,
     )
+
+
+# ---- 管理端素材（WI-20261025-04，PRD §6.5/§8.1~8.3；ADM-FR-017~020/023）----
+
+
+# 排序白名单（PRD §8.2）；title 可空，排序时 null 行两方向稳定尾随
+_ASSET_SORT_COLUMNS = {
+    "created_at": Asset.created_at,
+    "size_bytes": Asset.size_bytes,
+    "title": Asset.title,
+}
+
+# 阻断删除的引用类型（与 services/assets.py::_BLOCKING_TYPES 同口径）
+_BLOCKING_REFERENCE_TYPES = frozenset({"original", "current", "layer"})
+_REFERENCE_COUNT_TYPES = ("original", "current", "layer", "history")
+
+
+def _asset_not_found() -> HTTPException:
+    return HTTPException(
+        status.HTTP_404_NOT_FOUND,
+        detail=DeletionErrorDetail(code="not_found", message="素材不存在").model_dump(
+            mode="json", exclude_none=True
+        ),
+    )
+
+
+def _asset_conflict(code: str, message: str, references: list | None = None) -> HTTPException:
+    return HTTPException(
+        status.HTTP_409_CONFLICT,
+        detail=DeletionErrorDetail(
+            code=code, message=message, references=references
+        ).model_dump(mode="json", exclude_none=True),
+    )
+
+
+def _asset_q_criterion(needle: str) -> ColumnElement[bool] | None:
+    """q 命中规则（PRD §8.2）：title 包含（通配符转义防注入）或完整素材 UUID。"""
+    if not needle:
+        return None
+    try:
+        return Asset.id == uuid.UUID(needle)
+    except ValueError:
+        pattern = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return Asset.title.like(f"%{pattern}%", escape="\\")
+
+
+def _reference_rows(
+    types_by_session: dict[str, set[str]], titles: dict[str, str]
+) -> list[ReferenceOut]:
+    """详情完整引用行（引用摘要的 references 风格，按会话 id 稳定排序）。"""
+    return [
+        ReferenceOut(session_id=sid, title=titles.get(sid, ""), types=sorted(types))
+        for sid, types in sorted(types_by_session.items())
+    ]
+
+
+def _reference_counts(types_by_session: dict[Any, set[str]]) -> dict[str, int]:
+    """引用计数摘要：各类型被多少会话引用（列表与详情同一口径）。"""
+    return {
+        type_: sum(1 for types in types_by_session.values() if type_ in types)
+        for type_ in _REFERENCE_COUNT_TYPES
+    }
+
+
+def _asset_capability(
+    asset: Asset,
+    owner: User,
+    *,
+    active_tasks: bool,
+    types_by_session: dict[Any, set[str]],
+) -> tuple[bool, str | None, bool, str | None]:
+    """can_rename/can_delete + 稳定原因码（WI 决策 6）。
+
+    按钮能力只是提示（PRD §6.5），写入时后端仍重算；delete 判定与
+    delete_for_user 临界区同序：只读(隐藏) → kind 门禁 → 冻结 → 活动任务 →
+    R(X) 阻断；仅历史引用/无引用/仅墙关联均放行。
+    """
+    rename_blocker = None
+    if asset.library_hidden:
+        rename_blocker = "asset_readonly"
+    elif owner.status is UserStatus.DELETING:
+        rename_blocker = "account_deleting"
+
+    delete_blocker = None
+    if asset.library_hidden:
+        # 隐藏行在 delete_for_user 内不暴露管理入口（404），能力以只读提示
+        delete_blocker = "asset_readonly"
+    elif asset.kind in UNMANAGEABLE_KINDS:
+        delete_blocker = "unsupported_asset_kind"
+    elif owner.status is UserStatus.DELETING:
+        delete_blocker = "account_deleting"
+    elif active_tasks:
+        delete_blocker = "active_tasks"
+    elif any(types & _BLOCKING_REFERENCE_TYPES for types in types_by_session.values()):
+        delete_blocker = "asset_in_use"
+
+    return (
+        rename_blocker is None,
+        rename_blocker,
+        delete_blocker is None,
+        delete_blocker,
+    )
+
+
+def _asset_base(
+    asset: Asset,
+    owner: User,
+    *,
+    active_tasks: bool,
+    types_by_session: dict[Any, set[str]],
+) -> AdminAssetOut:
+    can_rename, rename_blocker, can_delete, delete_blocker = _asset_capability(
+        asset,
+        owner,
+        active_tasks=active_tasks,
+        types_by_session=types_by_session,
+    )
+    return AdminAssetOut(
+        id=asset.id,
+        kind=asset.kind,
+        source=asset.source,
+        title=asset.title,
+        image_format=asset.image_format,
+        width=asset.width,
+        height=asset.height,
+        size_bytes=asset.size_bytes,
+        has_alpha=asset.has_alpha,
+        created_at=asset.created_at,
+        user_id=asset.user_id,
+        username=owner.username,
+        library_hidden=asset.library_hidden,
+        references_count=_reference_counts(types_by_session),
+        can_rename=can_rename,
+        rename_blocker=rename_blocker,
+        can_delete=can_delete,
+        delete_blocker=delete_blocker,
+        preview_url=storage.signed_url(asset.storage_key),
+    )
+
+
+async def _asset_detail(session: SessionDep, asset: Asset) -> AdminAssetDetailOut:
+    """详情视图：与列表项同一构造器保证逐字段一致（ADM-AC-036）。"""
+    owner = await session.get(User, asset.user_id)
+    if owner is None:  # 防御：FK CASCADE 下不应出现
+        raise _asset_not_found()
+    references = await asset_service.asset_references(session, asset, strict=False)
+    base = _asset_base(
+        asset,
+        owner,
+        active_tasks=references["active_tasks"],
+        types_by_session=references["types_by_session"],
+    )
+    return AdminAssetDetailOut(
+        **base.model_dump(),
+        references=_reference_rows(
+            references["types_by_session"], references["session_titles"]
+        ),
+    )
+
+
+@router.get("/assets", response_model=Page[AdminAssetOut])
+async def list_assets(
+    params: Annotated[AdminAssetListParams, Query()],
+    _admin: RequireAdmin,
+    session: SessionDep,
+) -> Page[AdminAssetOut]:
+    """素材列表（ADM-FR-017，WI 决策 1）：跨用户全量（含隐藏与内部派生）+
+    user_id/q/kind/source/library_hidden/时间区间筛选 + 白名单排序（title 的
+    null 行两方向稳定尾随）。join users 仅取归属（一对一，不抬高 total）；
+    同 owner 的引用扫描与活动任务在页内缓存一次；普通读取不产生审计行，
+    preview_url 为短期签名 URL（不入审计）。"""
+    stmt = select(Asset, User).join(User, User.id == Asset.user_id)
+    if params.user_id is not None:
+        stmt = stmt.where(Asset.user_id == params.user_id)
+    if params.q is not None:
+        criterion = _asset_q_criterion(params.q.strip())
+        if criterion is not None:
+            stmt = stmt.where(criterion)
+    if params.kind is not None:
+        stmt = stmt.where(Asset.kind == params.kind)
+    if params.source is not None:
+        stmt = stmt.where(Asset.source == params.source)
+    if params.library_hidden is not None:
+        stmt = stmt.where(Asset.library_hidden.is_(params.library_hidden))
+    if params.created_from is not None:
+        stmt = stmt.where(Asset.created_at >= params.created_from)
+    if params.created_to is not None:
+        # 区间上界不包含（PRD §8.2）
+        stmt = stmt.where(Asset.created_at < params.created_to)
+
+    rows, total = await paging.paginate(
+        session, stmt, params, _ASSET_SORT_COLUMNS, nulls_last=("title",)
+    )
+
+    # 同 owner 的引用扫描与活动任务只算一次（页 ≤100 行）
+    scans: dict[uuid.UUID, dict] = {}
+    tasks: dict[uuid.UUID, bool] = {}
+    items = []
+    for row in rows:
+        asset, owner = row.Asset, row.User
+        if owner.id not in scans:
+            scans[owner.id] = await asset_service.scan_user_references(
+                session, owner.id, strict=False
+            )
+            tasks[owner.id] = await runs.has_active_tasks(session, owner.id)
+        entry = scans[owner.id]["assets"].get(asset.id) or {
+            "types": {},
+            "history_docs": 0,
+        }
+        items.append(
+            _asset_base(
+                asset,
+                owner,
+                active_tasks=tasks[owner.id],
+                types_by_session=entry["types"],
+            )
+        )
+    return Page(
+        items=items, total=total, page=params.page, page_size=params.page_size
+    )
+
+
+@router.post("/assets/batch-delete", response_model=BatchDeleteOut)
+async def batch_delete_assets(
+    payload: BatchDeleteIn,
+    request: Request,
+    admin: RequireAdmin,
+    session: SessionDep,
+) -> BatchDeleteOut:
+    """跨用户批删（ADM-FR-020，WI 决策 5）：原始输入 1~100（422），去重保序后
+    请求级全量核验——任一缺失整批 404 零写入且不回显具体 ID；通过后逐项独立
+    事务按各自 owner 调 delete_for_user（保护逐项重算，冲突计 skipped），每个
+    owner 收尾扫尾一次。每实际删除项独立补记 asset_delete（skipped 不逐条
+    留痕）；突发异常停止后续项并整体 500（已提交项不回滚，detail 附部分结果）。"""
+    request_id = audit.request_id_from(request)
+    actor_id = admin.id
+    unique = list(dict.fromkeys(payload.asset_ids))
+
+    rows = (
+        await session.execute(
+            select(Asset.id, Asset.user_id, Asset.kind).where(Asset.id.in_(unique))
+        )
+    ).all()
+    owners = {row[0]: (row[1], row[2]) for row in rows}
+    if len(owners) != len(unique):
+        raise _asset_not_found()
+    owner_rows = (
+        await session.execute(
+            select(User.id, User.status).where(
+                User.id.in_({user_id for user_id, _ in owners.values()})
+            )
+        )
+    ).all()
+    frozen = {row[0] for row in owner_rows if row[1] is UserStatus.DELETING}
+
+    deleted: list[uuid.UUID] = []
+    skipped: list[BatchSkippedItem] = []
+    swept_owner: uuid.UUID | None = None
+
+    async def sweep(owner_id: uuid.UUID) -> None:
+        for swept_id, key in await asset_service.sweep_hidden_for_user(session, owner_id):
+            await asset_service.cleanup_object(key, swept_id)
+
+    try:
+        for asset_id in unique:
+            owner_id, kind = owners[asset_id]
+            if swept_owner is not None and owner_id != swept_owner:
+                await sweep(swept_owner)
+                swept_owner = None
+            if owner_id in frozen:
+                skipped.append(
+                    BatchSkippedItem(
+                        id=asset_id,
+                        code="account_deleting",
+                        reason="目标账号删除中，素材变更被拒绝",
+                    )
+                )
+                continue
+            try:
+                reclaimed = await asset_service.delete_for_user(session, owner_id, asset_id)
+            except asset_service.AssetNotFound:
+                skipped.append(
+                    BatchSkippedItem(
+                        id=asset_id, code="not_found", reason="记录已不存在或已隐藏"
+                    )
+                )
+                continue
+            except asset_service.UnsupportedAssetKind:
+                skipped.append(
+                    BatchSkippedItem(
+                        id=asset_id,
+                        code="unsupported_asset_kind",
+                        reason="会话内部派生素材，本期不支持删除",
+                    )
+                )
+                continue
+            except ActiveTasks as exc:
+                skipped.append(
+                    BatchSkippedItem(
+                        id=asset_id,
+                        code="active_tasks",
+                        reason=str(exc) or "有任务或计划未结束，请完成或取消后重试",
+                    )
+                )
+                continue
+            except asset_service.AssetInUse as exc:
+                skipped.append(
+                    BatchSkippedItem(
+                        id=asset_id,
+                        code="asset_in_use",
+                        reason=asset_service.in_use_reason(exc.references),
+                    )
+                )
+                continue
+            except ReferenceStateInvalid:
+                skipped.append(
+                    BatchSkippedItem(
+                        id=asset_id,
+                        code="reference_state_invalid",
+                        reason="引用数据无法安全解析，需修复后才能删除",
+                    )
+                )
+                continue
+            deleted.append(asset_id)
+            # 每项提交后即清理对象；失败仅告警（LIB-FR-017 语义不变）
+            for swept_id, key in reclaimed:
+                await asset_service.cleanup_object(key, swept_id)
+            hidden = not any(swept == asset_id for swept, _ in reclaimed)
+            await audit.record_committed(
+                actor_id=actor_id,
+                target_type=audit.TARGET_ASSET,
+                target_id=asset_id,
+                action=audit.ASSET_DELETE,
+                request_id=request_id,
+                summary={
+                    "kind": kind.value,
+                    "reason": "仅历史引用，已转为隐藏" if hidden else "已删除",
+                },
+            )
+            swept_owner = owner_id
+        if swept_owner is not None:
+            await sweep(swept_owner)
+    except Exception as exc:
+        # 突发异常（WI 决策 5）：停止后续项，已提交项不回滚，500 附部分结果说明
+        logger.warning("管理端批删中断 deleted=%s", deleted, exc_info=True)
+        raise HTTPException(
+            status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "code": "batch_interrupted",
+                "message": "批量删除中断，已删除项保留，请刷新确认部分结果",
+                "deleted": [str(item) for item in deleted],
+                "skipped": [item.model_dump(mode="json") for item in skipped],
+            },
+        ) from exc
+
+    return BatchDeleteOut(deleted=deleted, skipped=skipped)
+
+
+@router.get("/assets/{asset_id}", response_model=AdminAssetDetailOut)
+async def get_asset(
+    asset_id: uuid.UUID,
+    _admin: RequireAdmin,
+    session: SessionDep,
+) -> AdminAssetDetailOut:
+    """素材详情（ADM-FR-017，WI 决策 2）：完整 references（原图/当前图/图层/
+    历史/墙拓扑）+ 引用计数摘要 + 能力原因码 + 短期签名 preview_url（不入审计）。"""
+    asset = await session.get(Asset, asset_id)
+    if asset is None:
+        raise _asset_not_found()
+    return await _asset_detail(session, asset)
+
+
+@router.patch("/assets/{asset_id}", response_model=AdminAssetDetailOut)
+async def rename_asset(
+    asset_id: uuid.UUID,
+    payload: AdminAssetPatchIn,
+    request: Request,
+    admin: RequireAdmin,
+    session: SessionDep,
+) -> AdminAssetDetailOut:
+    """管理员重命名（ADM-FR-018，WI 决策 3）：title 规则沿用用户端口径
+    （trim、空白归一 null、≤80 码点，超长 422）；隐藏（asset_readonly）或
+    所有者冻结（account_deleting）→ 409；SNAPSHOT 与内部派生 kind 均可命名
+    （不因管理员身份扩大删除权限）。审计 asset_rename 同事务留痕。"""
+    request_id = audit.request_id_from(request)
+    asset = await session.get(Asset, asset_id)
+    if asset is None:
+        raise _asset_not_found()
+    owner = await session.get(User, asset.user_id)
+    if owner is None:
+        raise _asset_not_found()
+    if asset.library_hidden:
+        raise _asset_conflict("asset_readonly", "隐藏素材只读，不可改名")
+    if owner.status is UserStatus.DELETING:
+        raise _asset_conflict("account_deleting", "目标账号删除中，素材变更被拒绝")
+
+    old_title = asset.title
+    asset.title = payload.title
+    audit.record(
+        session,
+        actor_id=admin.id,
+        target_type=audit.TARGET_ASSET,
+        target_id=asset.id,
+        action=audit.ASSET_RENAME,
+        request_id=request_id,
+        summary={"title": old_title, "new_title": payload.title},
+    )
+    await session.commit()
+    return await _asset_detail(session, asset)
+
+
+@router.delete("/assets/{asset_id}", response_model=AdminAssetDeleteOut)
+async def delete_asset(
+    asset_id: uuid.UUID,
+    request: Request,
+    admin: RequireAdmin,
+    session: SessionDep,
+) -> AdminAssetDeleteOut:
+    """素材单删（ADM-FR-019，WI 决策 4）：直接调用原所有者的
+    delete_for_user（复用临界区与全部保护），路由层把返回语义映射为管理端
+    两态响应（deleted=物理删除 / hidden=仅历史引用转隐藏），409 沿用
+    references 风格 blockers；对象清理由路由在提交后执行（失败仅告警）。
+    所有者冻结期拒绝素材变更（PRD §7）；删除成功独立补记 asset_delete。"""
+    request_id = audit.request_id_from(request)
+    asset = await session.get(Asset, asset_id)
+    if asset is None:
+        raise _asset_not_found()
+    owner = await session.get(User, asset.user_id)
+    if owner is None:
+        raise _asset_not_found()
+    kind = asset.kind
+    if owner.status is UserStatus.DELETING:
+        raise _asset_conflict("account_deleting", "目标账号删除中，素材变更被拒绝")
+
+    try:
+        reclaimed = await asset_service.delete_for_user(session, asset.user_id, asset_id)
+    except asset_service.AssetNotFound as exc:
+        # 隐藏行不暴露管理删除入口（404 不区分不存在与非存在），LIB-FR-011
+        raise _asset_not_found() from exc
+    except asset_service.UnsupportedAssetKind as exc:
+        raise _asset_conflict(
+            "unsupported_asset_kind", "会话内部派生素材，本期不支持删除"
+        ) from exc
+    except ActiveTasks as exc:
+        raise _asset_conflict(
+            "active_tasks", str(exc) or "有任务或计划未结束，请完成或取消后重试"
+        ) from exc
+    except asset_service.AssetInUse as exc:
+        raise _asset_conflict(
+            "asset_in_use",
+            "素材仍被会话的原图、当前图或图层引用，请先删除对应会话",
+            exc.references,
+        ) from exc
+    except ReferenceStateInvalid as exc:
+        raise _asset_conflict(
+            "reference_state_invalid", "引用数据无法安全解析，请先修复数据后再删除"
+        ) from exc
+
+    hidden = not any(swept == asset_id for swept, _ in reclaimed)
+    for swept_id, key in reclaimed:
+        await asset_service.cleanup_object(key, swept_id)
+    await audit.record_committed(
+        actor_id=admin.id,
+        target_type=audit.TARGET_ASSET,
+        target_id=asset_id,
+        action=audit.ASSET_DELETE,
+        request_id=request_id,
+        summary={
+            "kind": kind.value,
+            "reason": "仅历史引用，已转为隐藏" if hidden else "已删除",
+        },
+    )
+    return AdminAssetDeleteOut(id=asset_id, status="hidden" if hidden else "deleted")
