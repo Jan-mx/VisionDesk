@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
+import { ApiError, handleAuthExpired } from '@/api/client'
 import { isTerminal, runsApi, type GenerateInput, type Run, type RunStatus } from '@/api/runs'
 import { useSmoothedProgress } from '@/hooks/useSmoothedProgress'
 
@@ -44,6 +45,17 @@ export function useRun(runId: string | null) {
       if (isTerminal(payload.status)) {
         source.close()
         void queryClient.invalidateQueries({ queryKey: runKey(runId) })
+      }
+    }
+    source.onerror = async () => {
+      // 认证失效或异常时核验快照，若 401 立即关闭源并全局收敛
+      try {
+        await runsApi.get(runId)
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 401) {
+          source.close()
+          handleAuthExpired()
+        }
       }
     }
 

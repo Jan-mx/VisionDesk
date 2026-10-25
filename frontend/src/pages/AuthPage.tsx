@@ -54,8 +54,8 @@ export default function AuthPage() {
   const [password, setPassword] = useState('')
   const [isExiting, setIsExiting] = useState(false)
 
-  // 恢复由 RequireAuth 携带的原本目标路由，默认进入 /create
-  const from = (location.state as { from?: Location })?.from?.pathname || '/create'
+  // 恢复由 RequireAuth 或 URL 参数携带的原本目标路由，默认进入 /create
+  const from = (location.state as { from?: Location })?.from?.pathname || params.get('from') || '/create'
 
   // 未处于提交淡出中且已有登录态时直接跳转
   if (!isLoading && user && !isExiting) return <Navigate to={from} replace />

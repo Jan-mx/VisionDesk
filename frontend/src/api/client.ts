@@ -1,3 +1,5 @@
+import { queryClient } from '@/api/queryClient'
+
 export type ReferenceInfo = {
   session_id: string
   title: string
@@ -22,6 +24,18 @@ export class ApiError extends Error {
     this.code = code
     this.references = references
     this.detail = detail
+  }
+}
+
+/** 认证失效全局收敛（AC-006）：清理缓存并跳 /auth 带原路径回跳。 */
+export function handleAuthExpired(): void {
+  queryClient.clear()
+  if (typeof window !== 'undefined') {
+    const { pathname, search } = window.location
+    if (pathname !== '/auth' && pathname !== '/') {
+      const from = pathname + search
+      window.location.href = `/auth?from=${encodeURIComponent(from)}`
+    }
   }
 }
 
@@ -68,7 +82,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { 'Content-Type': 'application/json', ...init?.headers },
   })
 
-  if (!response.ok) throw await apiError(response, response.statusText)
+  if (!response.ok) {
+    const err = await apiError(response, response.statusText)
+    if (response.status === 401) {
+      const isAuthAttempt = path.startsWith('/auth/login') || path.startsWith('/auth/register')
+      const isPublicCheck =
+        path === '/auth/me' && typeof window !== 'undefined' && window.location.pathname === '/'
+      if (!isAuthAttempt && !isPublicCheck) {
+        handleAuthExpired()
+      }
+    }
+    throw err
+  }
   return response.status === 204 ? (undefined as T) : response.json()
 }
 
