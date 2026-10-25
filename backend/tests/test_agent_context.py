@@ -777,6 +777,109 @@ async def test_review_blocks_unrelated_split_addition(
     assert len(updated["document"]["layers"]) == 1  # 未拆层
 
 
+# ---- 四轮 R3-01/R3-02：明确要求的控制步骤保留 + 同批复充防重 ----
+
+
+async def test_requested_visibility_addition_survives(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """R3-01/用例1：用户明确「调亮后隐藏」，复审补的隐藏步骤经依据核对后保留。"""
+    session = await open_session(signed_in, image=poster_image())
+    planner = fake_planner(
+        tool_call("adjust_image", {"brightness": 0.2}),
+        tool_call("set_layer_visible", {"visible": False, "layer_id": "base"}),
+        AIMessage(content="是"),
+    )
+    turn = await send(signed_in, session["id"], "把底图调亮0.2，然后隐藏底图，两项都要完成")
+    assert [s["tool"] for s in turn["steps"]] == ["adjust_image", "set_layer_visible"]
+    if turn["status"] == "queued":
+        await signed_in.post(f"/api/sessions/{session['id']}/messages/{turn['id']}/confirm")
+    finished = await settle(signed_in, session["id"])
+    assert finished["status"] == "succeeded", finished.get("error")
+    updated = (await signed_in.get(f"/api/sessions/{session['id']}")).json()
+    base = layers_of(updated)["base"]
+    assert base["visible"] is False  # 隐藏确实执行
+    assert base["asset_id"] != session["current_asset_id"]  # 调亮确实执行
+
+
+async def test_unrequested_visibility_addition_still_blocked(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """R3-01/用例2：只要求调亮，复审擅自加隐藏 → 依据核对拒绝，隐藏被丢弃。"""
+    session = await open_session(signed_in, image=poster_image())
+    fake_planner(
+        tool_call("adjust_image", {"brightness": 0.2}),
+        tool_call("set_layer_visible", {"visible": False, "layer_id": "base"}),
+        AIMessage(content="否"),
+    )
+    turn = await send(signed_in, session["id"], "把底图调亮0.2")
+    assert [s["tool"] for s in turn["steps"]] == ["adjust_image"]
+    finished = await settle(signed_in, session["id"])
+    assert finished["status"] == "succeeded", finished.get("error")
+    updated = (await signed_in.get(f"/api/sessions/{session['id']}")).json()
+    assert layers_of(updated)["base"]["visible"] is True
+
+
+async def test_equivalent_review_additions_dedupe_among_themselves(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """R3-02/用例3：同一次复审两条等价旋转（省略 vs 显式 null）只执行一次。"""
+    session = await open_session(signed_in, image=poster_image())
+    fake_planner(
+        tool_call("flip_layer", {"direction": "horizontal"}),
+        tool_calls(
+            ("rotate_layer", {"angle": 15, "layer_id": "base"}),
+            ("rotate_layer", {"angle": 15, "layer_id": "base", "rotation": None}),
+        ),
+    )
+    turn = await send(signed_in, session["id"], "底图水平翻转一次，然后顺时针旋转15度")
+    tools = [s["tool"] for s in turn["steps"]]
+    assert tools.count("rotate_layer") == 1, tools
+    if turn["status"] == "queued":
+        await signed_in.post(f"/api/sessions/{session['id']}/messages/{turn['id']}/confirm")
+    finished = await settle(signed_in, session["id"])
+    assert finished["status"] == "succeeded", finished.get("error")
+    updated = (await signed_in.get(f"/api/sessions/{session['id']}")).json()
+    transform = layers_of(updated)["base"]["transform"]
+    assert transform["rotation"] == 15  # 不是 30
+
+
+async def test_three_equivalent_additions_keep_one(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """R3-02/用例4：三条以上等价补充仍只保留一次。"""
+    session = await open_session(signed_in, image=poster_image())
+    fake_planner(
+        tool_call("flip_layer", {"direction": "horizontal"}),
+        tool_calls(
+            ("rotate_layer", {"angle": 15, "layer_id": "base"}),
+            ("rotate_layer", {"angle": 15.0, "layer_id": "base", "rotation": None}),
+            ("rotate_layer", {"layer_id": "base", "angle": 15}),
+        ),
+    )
+    turn = await send(signed_in, session["id"], "底图水平翻转一次，然后顺时针旋转15度")
+    tools = [s["tool"] for s in turn["steps"]]
+    assert tools.count("rotate_layer") == 1, tools
+
+
+async def test_distinct_additions_not_merged(
+    signed_in: httpx.AsyncClient, fake_planner
+):
+    """R3-02/用例6：不同图层/参数/来源的补充互不误合并。"""
+    session = await open_session(signed_in, image=poster_image())
+    fake_planner(
+        tool_call("flip_layer", {"direction": "horizontal"}),
+        tool_calls(
+            ("rotate_layer", {"angle": 15, "layer_id": "base"}),
+            ("rotate_layer", {"angle": 15, "layer_id": "overlay"}),
+            ("rotate_layer", {"angle": 30, "layer_id": "base"}),
+        ),
+    )
+    turn = await send(signed_in, session["id"], "底图水平翻转一次，然后分别旋转底图和overlay，底图再单独转30度")
+    tools = [s["tool"] for s in turn["steps"]]
+    assert tools.count("rotate_layer") == 3, tools  # 三条互不等价
+
+
 async def test_review_second_pass_rescues_deliveryless_plan(
     signed_in: httpx.AsyncClient, fake_planner
 ):

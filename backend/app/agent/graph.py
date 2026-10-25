@@ -64,8 +64,8 @@ _FALLBACK_REPLY = "没太理解这条指令，换个说法或说得更具体一�
 _REVIEW_SYSTEM = """你是修图计划复审员。核对用户指令与已排步骤：
 - 每一项要求都有对应步骤，且没有用户没要求的步骤 → 不调用任何工具，直接回复：完整
 - 还有要求没有对应步骤 → 只为缺失的要求调用工具补步骤（可一次多个），
-  不要重复或改写已有步骤，不要添加用户没要求的控制性步骤
-  （如隐藏图层、调透明度、调顺序；拆层只允许多颜色主体/提升为图层的前置）
+  不要重复或改写已有步骤；控制性步骤（隐藏/透明度/顺序）与拆层只有在
+  用户明确要求过或作为多颜色主体/提层的必要前置时才补充
 - 复审补充的步骤会与服务端已排步骤做语义去重与结构校验，重复或无依据的补充会被丢弃
 
 用户指令：
@@ -90,6 +90,19 @@ _PREREQUISITE_ONLY_TOOLS = {
     "move_layer",
 }
 _REVIEW_CLARIFY = "这条指令的计划可能不完整，自动补全没有成功：请拆成两句分别发送，或换一种说法。"
+
+_BASIS_SYSTEM = """你是步骤依据核对员。判断下面的工具步骤是否直接对应用户消息里明确写出的某个操作要求。
+
+判定规则：
+- 用户消息文字中能找到对该操作或其直接等价说法的明确要求（如「隐藏/藏起来」「调透明度」「移到最前/最后」「拆开图层」）→ 回复：是
+- 步骤只是模型的自行优化、安全习惯或推断，用户消息从头到尾没提过这类操作 → 回复：否
+- 拿不准 → 回复：否
+
+用户消息：{goal}
+
+工具步骤：{tool} {params}
+
+只回复 是 或 否，不要输出其他内容。"""
 _REVIEW_SECOND_CHANCE = """补充核对：已排步骤只有布局/结构类操作（如拆层、移动、显隐），
 执行完不会产生任何新的图像内容。逐项核对用户指令里要求的每一个交付
 （例如：多种颜色的独立主体、新生成的图、营销物料、投放尺寸、改色、替换）。
@@ -178,6 +191,30 @@ async def _review_call(state: AgentState, *, extra: str | None = None):
     ]
 
 
+async def _addition_requested(goal: str, addition: dict) -> bool:
+    """依据核对（R3-01）：一次有界问答判断补充步骤是否对应用户明确写出的要求。
+
+    结构守卫（控制类工具/无依赖拆层）命中时不无条件丢弃——先问「用户是否
+    明确要求过这个操作」；判官异常或回答含糊按否处理（保持安全侧）。
+    """
+    try:
+        message = await planner().ainvoke(
+            [
+                SystemMessage(
+                    _BASIS_SYSTEM.format(
+                        goal=goal,
+                        tool=addition["tool"],
+                        params=json.dumps(addition["params"], ensure_ascii=False),
+                    )
+                ),
+                HumanMessage("判断"),
+            ]
+        )
+        return _text_of(message).strip().startswith("是")
+    except Exception:
+        return False
+
+
 async def _review(state: AgentState) -> AgentState:
     """一次有界复审：双向核对要求覆盖并合并缺失步骤（E2E-F04 / AC-026～029）。
 
@@ -222,22 +259,26 @@ async def _review(state: AgentState) -> AgentState:
     except (UnknownTool, tool_service.InvalidParams):
         return {}  # 初始计划本身过不了校验：交给 _verify 统一处理
     kept: list[dict] = []
+    kept_keys: set = set()
     for addition in additions:
         try:
             canonical = _canonical_params(addition["tool"], addition["params"])
         except (UnknownTool, tool_service.InvalidParams):
             # 复审认为缺了什么但表达不可用：不能静默按不完整计划执行（AC-028）
             return {"plan": [], "reply": _REVIEW_CLARIFY}
-        if _step_key(addition["tool"], canonical) in initial_keys:
-            continue  # 语义等价的回显：丢弃，不折叠初始内的有意重复
+        key = _step_key(addition["tool"], canonical)
+        if key in initial_keys or key in kept_keys:
+            # 语义等价的回显或同批复充重复（R3-02）：丢弃；初始内的有意重复不折叠
+            continue
         merged_tools = {step["tool"] for step in initial} | {step["tool"] for step in kept}
-        if addition["tool"] in _BLOCKED_ADDITION_TOOLS:
-            continue  # 无依据的控制性步骤：丢弃（AC-029）
-        if addition["tool"] == "split_layers" and not (
-            merged_tools & _NEEDS_SUBJECT_TOOLS
-        ):
-            continue  # 没有需要独立主体的步骤：拆层不是前置，丢弃（AC-029）
+        guarded = addition["tool"] in _BLOCKED_ADDITION_TOOLS or (
+            addition["tool"] == "split_layers"
+            and not (merged_tools & _NEEDS_SUBJECT_TOOLS)
+        )
+        if guarded and not await _addition_requested(state["goal"], addition):
+            continue  # 用户没有明确要求过这个操作：丢弃（AC-029 / R3-01）
         kept.append({"tool": addition["tool"], "params": canonical})
+        kept_keys.add(key)
     if not kept:
         return {}
 
