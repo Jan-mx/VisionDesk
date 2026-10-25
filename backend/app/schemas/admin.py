@@ -6,12 +6,13 @@ role/token_version/last_login_at 等注入一律 422（ADM-AC-020）。
 
 import uuid
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.account_deletion_operation import AccountDeletionStatus
 from app.models.asset import AssetKind, AssetSource
+from app.models.tool_run import RunStatus
 from app.models.user import UserRole, UserStatus
 from app.schemas.asset import TITLE_MAX_CODEPOINTS
 from app.schemas.auth import Credentials, PasswordStr, UsernameStr, normalize_username
@@ -226,6 +227,146 @@ class AdminAssetListParams(PageParams):
 
     @model_validator(mode="after")
     def _time_range_order(self) -> "AdminAssetListParams":
+        if self.created_from and self.created_to and self.created_from > self.created_to:
+            raise ValueError("created_from 不得晚于 created_to")
+        return self
+
+
+# ---- 任务与操作查询（WI-20261025-05，PRD §6.5/§8.1~8.3；ADM-FR-021/022/024）----
+
+
+class AdminRunStepOut(BaseModel):
+    """plan 步骤摘要（WI 决策 3）：每步仅 tool 名与 status，params 不透传。"""
+
+    tool: str
+    status: str
+
+
+class AdminToolRunOut(BaseModel):
+    """管理端工具任务视图（WI 决策 2 白名单）：params/result 原始 JSON 不透传
+    （可能含提示词）；时间字段如实（可空）；duration_ms 仅当起止均存在才计算、
+    否则 null 不编造。"""
+
+    id: uuid.UUID
+    user_id: uuid.UUID
+    username: str
+    session_id: uuid.UUID | None
+    tool: str
+    status: RunStatus
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    heartbeat_at: datetime | None
+    duration_ms: int | None
+
+
+class AdminToolRunDetailOut(AdminToolRunOut):
+    """工具任务详情（WI 决策 2/5）：另含计划步骤（工具任务无则空）、产物列表
+    （存在 → {asset_id, kind, url 短期签名}；素材行已删 → {asset_id,
+    missing: true}）与脱敏 error 摘要；error 仅详情返回（列表白名单不含）。"""
+
+    steps: list[AdminRunStepOut] = []
+    artifacts: list[dict[str, Any]] = []
+    error: str | None = None
+
+
+class AdminAgentRunOut(BaseModel):
+    """管理端 Agent 轮次视图（WI 决策 3 白名单）：goal/reply/原始 JSON/供应商
+    返回一律不透传；时间只有 created_at——不编造开始/结束/耗时；turn 为该会话
+    (created_at, id) 次序的 1 基轮次序号（如实推算，模型无持久化轮次列）。"""
+
+    id: uuid.UUID
+    user_id: uuid.UUID
+    username: str
+    session_id: uuid.UUID
+    status: RunStatus
+    created_at: datetime
+    turn: int
+    steps: list[AdminRunStepOut] = []
+    artifacts: list[dict[str, Any]] = []
+
+
+class AdminAgentRunDetailOut(AdminAgentRunOut):
+    """轮次详情：另含脱敏 error 摘要（WI 决策 5；列表白名单不含 error）。"""
+
+    error: str | None = None
+
+
+class AdminAuditLogOut(BaseModel):
+    """操作记录视图（WI 决策 4）：actor_username 由 join 取得、actor 已删为
+    null；summary 为白名单脱敏摘要，原样返回。"""
+
+    id: uuid.UUID
+    actor_id: uuid.UUID
+    actor_username: str | None = None
+    target_type: str
+    target_id: uuid.UUID
+    action: str
+    result: str
+    request_id: str | None
+    summary: dict[str, Any] | None
+    operation_id: uuid.UUID | None
+    created_at: datetime
+
+
+class AdminAuditLogDetailOut(AdminAuditLogOut):
+    """操作记录详情（WI 决策 4）：operation_id 非空时嵌套清理操作视图
+    （读操作详情不受清理开关限制；不含 scope_digest 原始对象清单）。"""
+
+    operation: DeletionOperationOut | None = None
+
+
+class AdminToolRunListParams(PageParams):
+    """GET /admin/tool-runs 查询参数（PRD §8.2）：user_id/status/tool/时间区间
+    筛选 + 排序白名单 created_at/status/tool；时间须带时区、反向区间 422。"""
+
+    sort: Literal["created_at", "status", "tool"] = "created_at"
+    user_id: uuid.UUID | None = None
+    status: RunStatus | None = None
+    tool: Annotated[str | None, Field(max_length=48)] = None
+    created_from: AwareDatetime | None = None
+    created_to: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def _time_range_order(self) -> "AdminToolRunListParams":
+        if self.created_from and self.created_to and self.created_from > self.created_to:
+            raise ValueError("created_from 不得晚于 created_to")
+        return self
+
+
+class AdminAgentRunListParams(PageParams):
+    """GET /admin/agent-runs 查询参数（PRD §8.2）：user_id/status/session_id/
+    时间区间筛选 + 排序白名单 created_at/status（无 tool——类型由资源决定）。"""
+
+    sort: Literal["created_at", "status"] = "created_at"
+    user_id: uuid.UUID | None = None
+    status: RunStatus | None = None
+    session_id: uuid.UUID | None = None
+    created_from: AwareDatetime | None = None
+    created_to: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def _time_range_order(self) -> "AdminAgentRunListParams":
+        if self.created_from and self.created_to and self.created_from > self.created_to:
+            raise ValueError("created_from 不得晚于 created_to")
+        return self
+
+
+class AdminAuditLogListParams(PageParams):
+    """GET /admin/audit-logs 查询参数（PRD §8.2）：actor_id/target_id/action/
+    result/时间区间筛选 + 排序白名单 created_at/action/result；无筛选默认
+    不截断（total 为全表真实总数）。"""
+
+    sort: Literal["created_at", "action", "result"] = "created_at"
+    actor_id: uuid.UUID | None = None
+    target_id: uuid.UUID | None = None
+    action: Annotated[str | None, Field(max_length=32)] = None
+    result: Annotated[str | None, Field(max_length=16)] = None
+    created_from: AwareDatetime | None = None
+    created_to: AwareDatetime | None = None
+
+    @model_validator(mode="after")
+    def _time_range_order(self) -> "AdminAuditLogListParams":
         if self.created_from and self.created_to and self.created_from > self.created_to:
             raise ValueError("created_from 不得晚于 created_to")
         return self

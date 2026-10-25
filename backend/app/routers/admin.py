@@ -17,21 +17,41 @@
 响应与 409 原因），批删请求级全量核验（缺失整批 404 零写入）后逐项独立
 事务；动作留痕 asset_rename/asset_delete（批量只记实际删除项）；preview_url
 短期签名、不入审计。
+
+任务与操作查询（WI-20261025-05 决策 1~7）：tool-runs / agent-runs / audit-logs
+三组只读端点全部直接 select / session.get（只读红线——绝不经过 runs.get、
+expire_stale 等会落库发事件的路径），读取零审计、不注册任何写方法（未注册
+语义落 /api 兜底 404）；白名单 Out 模型（params/goal/reply/原始 JSON 一律不
+透传），错误摘要经 _sanitize_error（剔除 URL 查询串/密钥形态键值/签名 URL/
+原始 response body，只留异常类型名 + ≤200 字符消息）；产物缺失 missing 标记
+不使详情失败、存在则给短期签名 URL；audit-logs 详情按 operation_id 嵌套
+DeletionOperationOut（读操作详情不受清理开关限制）。
 """
 
 import logging
+import re
 import uuid
+from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response, status
-from sqlalchemy import ColumnElement, Select, func, select
+from sqlalchemy import ColumnElement, Select, func, select, tuple_
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app import storage
 from app.config import get_settings
 from app.db import SessionDep
 from app.deps import RequireAdmin
-from app.models import AgentRun, Asset, EditSession, ToolRun, User
+from app.models import (
+    AdminAuditLog,
+    AgentRun,
+    Asset,
+    EditSession,
+    ToolRun,
+    User,
+)
 from app.models.account_deletion_operation import (
     PHASE_FROZEN,
     AccountDeletionOperation,
@@ -41,11 +61,20 @@ from app.models.asset import UNMANAGEABLE_KINDS
 from app.models.user import UserStatus
 from app.schemas.admin import (
     AccountDeletionPreview,
+    AdminAgentRunDetailOut,
+    AdminAgentRunListParams,
+    AdminAgentRunOut,
     AdminAssetDeleteOut,
     AdminAssetDetailOut,
     AdminAssetListParams,
     AdminAssetOut,
     AdminAssetPatchIn,
+    AdminAuditLogDetailOut,
+    AdminAuditLogListParams,
+    AdminAuditLogOut,
+    AdminToolRunDetailOut,
+    AdminToolRunListParams,
+    AdminToolRunOut,
     AdminUserOut,
     AdminUserPatch,
     DeletionConfirmInput,
@@ -1134,3 +1163,451 @@ async def delete_asset(
         },
     )
     return AdminAssetDeleteOut(id=asset_id, status="hidden" if hidden else "deleted")
+
+
+# ---- 任务与操作查询（WI-20261025-05，PRD §6.5/§8.1~8.3；ADM-FR-021/022/024）----
+#
+# 只读红线（WI 决策 1/6）：全部直接 select / session.get，绝不经过 runs.get、
+# expire_stale 等会落库发事件的路径；读取零审计（不调用 audit.record）；不注册
+# 任何写方法（PUT/PATCH/DELETE 未注册 → 落 /api 兜底 404）。params/goal/reply/
+# 原始 JSON 一律不透传（WI 决策 2/3），错误摘要经 _sanitize_error（WI 决策 5）。
+
+
+_TOOL_RUN_SORT_COLUMNS = {
+    "created_at": ToolRun.created_at,
+    "status": ToolRun.status,
+    "tool": ToolRun.tool,
+}
+_AGENT_RUN_SORT_COLUMNS = {
+    "created_at": AgentRun.created_at,
+    "status": AgentRun.status,
+}
+_AUDIT_LOG_SORT_COLUMNS = {
+    "created_at": AdminAuditLog.created_at,
+    "action": AdminAuditLog.action,
+    "result": AdminAuditLog.result,
+}
+
+_ERROR_SUMMARY_MAX = 200
+_ERROR_FALLBACK = "（原始错误详情已脱敏）"
+# 请求/响应/头转储行：整行丢弃（WI 决策 5：剔除而非仅截断）
+_DUMP_LINE_RE = re.compile(r"(?i)^(request|response|headers|body)\b\s*[:：]")
+# 原始 response body 等 JSON 对象：由内向外逐层剥离
+_JSON_OBJECT_RE = re.compile(r"\{[^{}]*\}")
+# 签名 URL / 带查询串的 URL：整体剔除
+_URL_RE = re.compile(r"https?://\S+")
+# Authorization / api key 形态键值：键值整体剔除
+_SECRET_KV_RE = re.compile(
+    r"(?i)\b(authorization|x-api-key|api[-_]?key|access[-_]?key|secret[-_]?key"
+    r"|access[-_]?token|bearer)\b\s*[:=]?\s*\S+"
+)
+
+
+def _run_not_found() -> HTTPException:
+    return HTTPException(
+        status.HTTP_404_NOT_FOUND, detail={"code": "not_found", "message": "任务不存在"}
+    )
+
+
+def _turn_not_found() -> HTTPException:
+    return HTTPException(
+        status.HTTP_404_NOT_FOUND, detail={"code": "not_found", "message": "轮次不存在"}
+    )
+
+
+def _audit_log_not_found() -> HTTPException:
+    return HTTPException(
+        status.HTTP_404_NOT_FOUND, detail={"code": "not_found", "message": "操作记录不存在"}
+    )
+
+
+def _sanitize_error(error: str | None) -> str | None:
+    """错误摘要脱敏（WI 决策 5 / ADM-AC-045）：剔除 URL 查询串与签名 URL、
+    Authorization/api key 形态键值、原始 response body（JSON 对象整体剥离），
+    请求/响应转储行整行丢弃；只留异常类型名 + 截断消息（≤200 字符、去除换行）。
+    全部剔除后返回固定占位，保证摘要非空。"""
+    if not error:
+        return None
+    cleaned = error
+    while True:
+        stripped = _JSON_OBJECT_RE.sub(" ", cleaned)
+        if stripped == cleaned:
+            break
+        cleaned = stripped
+    cleaned = _URL_RE.sub(" ", cleaned)
+    cleaned = _SECRET_KV_RE.sub(" ", cleaned)
+    kept = [
+        line.strip()
+        for line in cleaned.splitlines()
+        if line.strip() and not _DUMP_LINE_RE.match(line.strip())
+    ]
+    summary = "；".join(kept)[:_ERROR_SUMMARY_MAX]
+    return summary or _ERROR_FALLBACK
+
+
+def _duration_ms(started_at: datetime | None, finished_at: datetime | None) -> int | None:
+    """耗时仅当起止均存在才计算（WI 决策 2），否则 null 不编造。"""
+    if started_at is None or finished_at is None:
+        return None
+    return int((finished_at - started_at).total_seconds() * 1000)
+
+
+def _steps_summary(plan: list | None) -> list[dict]:
+    """plan 步骤摘要（WI 决策 3）：每步仅 tool 名与 status。"""
+    if not isinstance(plan, list):
+        return []
+    return [
+        {"tool": str(step["tool"]), "status": str(step.get("status") or "")}
+        for step in plan
+        if isinstance(step, dict) and step.get("tool")
+    ]
+
+
+def _products_of_result(result: dict | None) -> list:
+    """一次任务的产物 asset_id（与 services.agent._products_of 同口径）：
+    result.asset_ids 与批量 items[].output_ids 统一。"""
+    result = result or {}
+    products = list(result.get("asset_ids") or [])
+    if not products:
+        for item in result.get("items") or []:
+            if isinstance(item, dict) and item.get("status") == "succeeded":
+                products.extend(item.get("output_ids") or [])
+    return products
+
+
+async def _artifact_entries(
+    session: AsyncSession, asset_ids: list
+) -> list[dict[str, Any]]:
+    """产物条目（WI 决策 2/5）：素材行存在 → {asset_id, kind, url(短期签名)}；
+    行已删 → {asset_id, missing: true}，不使详情失败、不给签名 URL。"""
+    unique = list(dict.fromkeys(str(a) for a in asset_ids if a is not None))
+    if not unique:
+        return []
+    rows = (
+        await session.execute(
+            select(Asset.id, Asset.kind, Asset.storage_key).where(
+                Asset.id.in_([uuid.UUID(a) for a in unique])
+            )
+        )
+    ).all()
+    found = {row[0]: (row[1], row[2]) for row in rows}
+    entries: list[dict[str, Any]] = []
+    for raw in unique:
+        asset_id = uuid.UUID(raw)
+        info = found.get(asset_id)
+        if info is None:
+            entries.append({"asset_id": asset_id, "missing": True})
+        else:
+            kind, storage_key = info
+            entries.append(
+                {
+                    "asset_id": asset_id,
+                    "kind": kind.value,
+                    "url": storage.signed_url(storage_key),
+                }
+            )
+    return entries
+
+
+def _tool_run_out(run: ToolRun, username: str | None) -> AdminToolRunOut:
+    return AdminToolRunOut(
+        id=run.id,
+        user_id=run.user_id,
+        username=username or "",
+        session_id=run.session_id,
+        tool=run.tool,
+        status=run.status,
+        created_at=run.created_at,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        heartbeat_at=run.heartbeat_at,
+        duration_ms=_duration_ms(run.started_at, run.finished_at),
+    )
+
+
+def _audit_log_out(log: AdminAuditLog, username: str | None) -> AdminAuditLogOut:
+    return AdminAuditLogOut(
+        id=log.id,
+        actor_id=log.actor_id,
+        actor_username=username,
+        target_type=log.target_type,
+        target_id=log.target_id,
+        action=log.action,
+        result=log.result,
+        request_id=log.request_id,
+        summary=log.summary,
+        operation_id=log.operation_id,
+        created_at=log.created_at,
+    )
+
+
+# 会话内轮次序号的关联子查询：AgentRun 无持久化轮次列，按既有 (created_at, id)
+# 双键次序（与 services.agent.turns_of 同口径）如实推算 1 基序数（WI 决策 3）
+_PeerAgentRun = aliased(AgentRun)
+
+
+def _turn_ordinal() -> Any:
+    return (
+        select(func.count())
+        .select_from(_PeerAgentRun)
+        .where(
+            _PeerAgentRun.session_id == AgentRun.session_id,
+            tuple_(_PeerAgentRun.created_at, _PeerAgentRun.id)
+            <= tuple_(AgentRun.created_at, AgentRun.id),
+        )
+        .correlate(AgentRun)
+        .scalar_subquery()
+        .label("turn")
+    )
+
+
+async def _results_of(
+    session: AsyncSession, run_ids: set[uuid.UUID]
+) -> dict[uuid.UUID, dict | None]:
+    """页内/轮次内关联工具任务的 result 一次取回（避免逐行查询）。"""
+    if not run_ids:
+        return {}
+    return dict(
+        (
+            await session.execute(
+                select(ToolRun.id, ToolRun.result).where(ToolRun.id.in_(run_ids))
+            )
+        ).all()
+    )
+
+
+def _plan_products(
+    plan: list | None, results: dict[uuid.UUID, dict | None]
+) -> list[uuid.UUID]:
+    """plan 关联工具任务的产物 ID（去重保序）。"""
+    products: list[uuid.UUID] = []
+    for step in plan or []:
+        if not isinstance(step, dict) or not step.get("run_id"):
+            continue
+        try:
+            run_id = uuid.UUID(str(step["run_id"]))
+        except ValueError:
+            continue
+        for product in _products_of_result(results.get(run_id)):
+            product_id = uuid.UUID(str(product))
+            if product_id not in products:
+                products.append(product_id)
+    return products
+
+
+@router.get("/tool-runs", response_model=Page[AdminToolRunOut])
+async def list_tool_runs(
+    params: Annotated[AdminToolRunListParams, Query()],
+    _admin: RequireAdmin,
+    session: SessionDep,
+) -> Page[AdminToolRunOut]:
+    """工具任务列表（ADM-FR-021/022，WI 决策 1/2/6）：跨用户全量 +
+    user_id/status/tool/created_from~to（下含上不含）筛选 + 白名单排序
+    （id 同方向稳定）。直接 select——绝不经过 runs.get 的失联过期路径；
+    读取零审计；params/result 原始 JSON 不透传。"""
+    stmt = select(ToolRun, User.username).join(User, User.id == ToolRun.user_id)
+    if params.user_id is not None:
+        stmt = stmt.where(ToolRun.user_id == params.user_id)
+    if params.status is not None:
+        stmt = stmt.where(ToolRun.status == params.status)
+    if params.tool is not None:
+        stmt = stmt.where(ToolRun.tool == params.tool)
+    if params.created_from is not None:
+        stmt = stmt.where(ToolRun.created_at >= params.created_from)
+    if params.created_to is not None:
+        # 区间上界不包含（PRD §8.2）
+        stmt = stmt.where(ToolRun.created_at < params.created_to)
+    rows, total = await paging.paginate(session, stmt, params, _TOOL_RUN_SORT_COLUMNS)
+    return Page(
+        items=[_tool_run_out(row.ToolRun, row.username) for row in rows],
+        total=total,
+        page=params.page,
+        page_size=params.page_size,
+    )
+
+
+@router.get("/tool-runs/{run_id}", response_model=AdminToolRunDetailOut)
+async def get_tool_run(
+    run_id: uuid.UUID,
+    _admin: RequireAdmin,
+    session: SessionDep,
+) -> AdminToolRunDetailOut:
+    """工具任务详情（ADM-FR-021/022/043/045）：白名单字段 + duration + 步骤
+    （工具任务无则空）+ 产物（缺失标记 missing）+ 脱敏 error；session.get
+    只读，不触发失联过期；params/result 原始 JSON 不透传。"""
+    run = await session.get(ToolRun, run_id)
+    if run is None:
+        raise _run_not_found()
+    username = await session.scalar(select(User.username).where(User.id == run.user_id))
+    return AdminToolRunDetailOut(
+        **_tool_run_out(run, username).model_dump(),
+        steps=[],  # 工具任务无计划步骤（WI 决策 2：无则空）
+        artifacts=await _artifact_entries(session, _products_of_result(run.result)),
+        error=_sanitize_error(run.error),
+    )
+
+
+@router.get("/agent-runs", response_model=Page[AdminAgentRunOut])
+async def list_agent_runs(
+    params: Annotated[AdminAgentRunListParams, Query()],
+    _admin: RequireAdmin,
+    session: SessionDep,
+) -> Page[AdminAgentRunOut]:
+    """Agent 轮次列表（ADM-FR-021/022，WI 决策 1/3/6）：跨用户全量 +
+    user_id/status/session_id/created_from~to 筛选 + 白名单排序（created_at/
+    status，无 tool）；turn 为会话内轮次序号；goal/reply/原始 JSON 不透传，
+    时间只有 created_at 不编造起止耗时；直接 select 零副作用零审计。"""
+    stmt = select(AgentRun, User.username, _turn_ordinal()).join(
+        User, User.id == AgentRun.user_id
+    )
+    if params.user_id is not None:
+        stmt = stmt.where(AgentRun.user_id == params.user_id)
+    if params.status is not None:
+        stmt = stmt.where(AgentRun.status == params.status)
+    if params.session_id is not None:
+        stmt = stmt.where(AgentRun.session_id == params.session_id)
+    if params.created_from is not None:
+        stmt = stmt.where(AgentRun.created_at >= params.created_from)
+    if params.created_to is not None:
+        stmt = stmt.where(AgentRun.created_at < params.created_to)
+    rows, total = await paging.paginate(session, stmt, params, _AGENT_RUN_SORT_COLUMNS)
+
+    # 页内产物一次性解析（≤100 行）：plan 关联 run_id → tool_runs.result → assets
+    linked_ids = {
+        uuid.UUID(str(step["run_id"]))
+        for row in rows
+        for step in row.AgentRun.plan or []
+        if isinstance(step, dict) and step.get("run_id")
+    }
+    results = await _results_of(session, linked_ids)
+    entries = {
+        entry["asset_id"]: entry
+        for entry in await _artifact_entries(
+            session,
+            [a for result in results.values() for a in _products_of_result(result)],
+        )
+    }
+    items = [
+        AdminAgentRunOut(
+            id=row.AgentRun.id,
+            user_id=row.AgentRun.user_id,
+            username=row.username,
+            session_id=row.AgentRun.session_id,
+            status=row.AgentRun.status,
+            created_at=row.AgentRun.created_at,
+            turn=row.turn,
+            steps=_steps_summary(row.AgentRun.plan),
+            artifacts=[
+                entries[pid]
+                for pid in _plan_products(row.AgentRun.plan, results)
+                if pid in entries
+            ],
+        )
+        for row in rows
+    ]
+    return Page(items=items, total=total, page=params.page, page_size=params.page_size)
+
+
+@router.get("/agent-runs/{turn_id}", response_model=AdminAgentRunDetailOut)
+async def get_agent_run(
+    turn_id: uuid.UUID,
+    _admin: RequireAdmin,
+    session: SessionDep,
+) -> AdminAgentRunDetailOut:
+    """Agent 轮次详情（ADM-FR-021/022/043/045）：步骤摘要（每步仅 tool 与
+    status）+ 同轮次关联工具任务的产物（缺失标记）+ 脱敏 error；turn 序号与
+    时间字段口径同列表；goal/reply/params 不透传；session.get 只读。"""
+    turn = await session.get(AgentRun, turn_id)
+    if turn is None:
+        raise _turn_not_found()
+    username = await session.scalar(select(User.username).where(User.id == turn.user_id))
+    ordinal = await session.scalar(
+        select(func.count())
+        .select_from(AgentRun)
+        .where(
+            AgentRun.session_id == turn.session_id,
+            tuple_(AgentRun.created_at, AgentRun.id)
+            <= tuple_(turn.created_at, turn.id),
+        )
+    )
+    run_ids = {
+        uuid.UUID(str(step["run_id"]))
+        for step in turn.plan or []
+        if isinstance(step, dict) and step.get("run_id")
+    }
+    results = await _results_of(session, run_ids)
+    return AdminAgentRunDetailOut(
+        id=turn.id,
+        user_id=turn.user_id,
+        username=username or "",
+        session_id=turn.session_id,
+        status=turn.status,
+        created_at=turn.created_at,
+        turn=ordinal,
+        steps=_steps_summary(turn.plan),
+        artifacts=await _artifact_entries(session, _plan_products(turn.plan, results)),
+        error=_sanitize_error(turn.error),
+    )
+
+
+@router.get("/audit-logs", response_model=Page[AdminAuditLogOut])
+async def list_audit_logs(
+    params: Annotated[AdminAuditLogListParams, Query()],
+    _admin: RequireAdmin,
+    session: SessionDep,
+) -> Page[AdminAuditLogOut]:
+    """操作记录列表（ADM-FR-024，WI 决策 4/6）：actor_id/target_id/action/
+    result/created_from~to 筛选 + 白名单排序；无筛选默认不截断（total 为全表
+    真实总数）；actor LEFT JOIN（已删为 null）；读取零审计；不提供任何写端点。"""
+    stmt = select(AdminAuditLog, User.username).outerjoin(
+        User, User.id == AdminAuditLog.actor_id
+    )
+    if params.actor_id is not None:
+        stmt = stmt.where(AdminAuditLog.actor_id == params.actor_id)
+    if params.target_id is not None:
+        stmt = stmt.where(AdminAuditLog.target_id == params.target_id)
+    if params.action is not None:
+        stmt = stmt.where(AdminAuditLog.action == params.action)
+    if params.result is not None:
+        stmt = stmt.where(AdminAuditLog.result == params.result)
+    if params.created_from is not None:
+        stmt = stmt.where(AdminAuditLog.created_at >= params.created_from)
+    if params.created_to is not None:
+        # 区间上界不包含（PRD §8.2）
+        stmt = stmt.where(AdminAuditLog.created_at < params.created_to)
+    rows, total = await paging.paginate(session, stmt, params, _AUDIT_LOG_SORT_COLUMNS)
+    return Page(
+        items=[_audit_log_out(row.AdminAuditLog, row.username) for row in rows],
+        total=total,
+        page=params.page,
+        page_size=params.page_size,
+    )
+
+
+@router.get("/audit-logs/{log_id}", response_model=AdminAuditLogDetailOut)
+async def get_audit_log(
+    log_id: uuid.UUID,
+    _admin: RequireAdmin,
+    session: SessionDep,
+) -> AdminAuditLogDetailOut:
+    """操作记录详情（ADM-FR-024/048）：全字段 + actor join（已删 null）+
+    operation_id 非空时嵌套清理操作视图（读不受清理开关限制、不含 scope_digest
+    原始对象清单）；404 不区分不存在原因。"""
+    row = (
+        await session.execute(
+            select(AdminAuditLog, User.username)
+            .outerjoin(User, User.id == AdminAuditLog.actor_id)
+            .where(AdminAuditLog.id == log_id)
+        )
+    ).first()
+    if row is None:
+        raise _audit_log_not_found()
+    operation = None
+    if row.AdminAuditLog.operation_id is not None:
+        record = await session.get(AccountDeletionOperation, row.AdminAuditLog.operation_id)
+        if record is not None:
+            operation = DeletionOperationOut.model_validate(record)
+    return AdminAuditLogDetailOut(
+        **_audit_log_out(row.AdminAuditLog, row.username).model_dump(),
+        operation=operation,
+    )
