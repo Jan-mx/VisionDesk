@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import {
   Datagrid,
+  ExportButton,
+  FilterButton,
   FunctionField,
   List,
   SelectInput,
@@ -62,6 +64,8 @@ const userFilters = [
 function UserListActions({ onOpenCreate }: { onOpenCreate: () => void }) {
   return (
     <Box sx={{ display: 'flex', gap: 1, py: 1 }}>
+      <FilterButton />
+      <ExportButton />
       <Button
         variant="contained"
         color="primary"

@@ -178,12 +178,32 @@ export interface CustomAdminDataProvider extends DataProvider {
 
 export const dataProvider: CustomAdminDataProvider = {
   getList: async (resource, params) => {
-    const qs = buildQueryParams(resource, params)
-    const res = await api.get<PageResponse<any>>(`/admin/${resource}?${qs}`)
-    return {
-      data: res.items,
-      total: res.total,
+    const perPage = params.pagination?.perPage ?? 25
+    if (perPage <= 100) {
+      const qs = buildQueryParams(resource, params)
+      const res = await api.get<PageResponse<any>>(`/admin/${resource}?${qs}`)
+      return {
+        data: res.items,
+        total: res.total,
+      }
     }
+    // 全量导出（react-admin ExportButton 以大 perPage 拉取）：后端单页上限 100，
+    // 按 100 一页循环聚合；排序为 created_at+id 稳定序，跨页顺序一致。
+    // 上限 5000 条防失控，超出部分截断（个人规模远达不到）。
+    const items: any[] = []
+    let total = 0
+    let page = 1
+    do {
+      const qs = buildQueryParams(resource, {
+        ...params,
+        pagination: { page, perPage: 100 },
+      })
+      const res = await api.get<PageResponse<any>>(`/admin/${resource}?${qs}`)
+      total = res.total
+      items.push(...res.items)
+      page += 1
+    } while (items.length < total && items.length < 5000)
+    return { data: items, total }
   },
 
   getOne: async (resource, params) => {
