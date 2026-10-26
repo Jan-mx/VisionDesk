@@ -45,8 +45,9 @@ const assetFilters = [
     label="素材类型"
     alwaysOn
     size="small"
+    emptyValue="__all__"
+    emptyText="全部"
     choices={[
-      { id: '__all__', name: '全部' },
       { id: 'original', name: '用户原图 (original)' },
       { id: 'generated', name: 'AI 生成 (generated)' },
       { id: 'subject', name: '主体抠图 (subject)' },
@@ -62,8 +63,9 @@ const assetFilters = [
     source="source"
     label="素材来源"
     size="small"
+    emptyValue="__all__"
+    emptyText="全部"
     choices={[
-      { id: '__all__', name: '全部' },
       { id: 'upload', name: '上传 (upload)' },
       { id: 'generate', name: '生成 (generate)' },
       { id: 'tool', name: '工具处理 (tool)' },
@@ -74,8 +76,9 @@ const assetFilters = [
     source="library_hidden"
     label="隐藏状态"
     size="small"
+    emptyValue="__all__"
+    emptyText="全部"
     choices={[
-      { id: '__all__', name: '全部' },
       { id: 'false', name: '创意库公开' },
       { id: 'true', name: '仅隐藏/内部' },
     ]}

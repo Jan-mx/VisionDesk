@@ -25,8 +25,9 @@ const agentRunFilters = [
     label="轮次状态"
     alwaysOn
     size="small"
+    emptyValue="__all__"
+    emptyText="全部"
     choices={[
-      { id: '__all__', name: '全部' },
       { id: 'queued', name: '排队中 (queued)' },
       { id: 'running', name: '执行中 (running)' },
       { id: 'succeeded', name: '成功 (succeeded)' },

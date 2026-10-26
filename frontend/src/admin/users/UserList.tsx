@@ -35,6 +35,8 @@ const userFilters = [
     label="账号状态"
     alwaysOn
     size="small"
+    emptyValue="__all__"
+    emptyText="全部"
     choices={[
       { id: 'active', name: '正常 (active)' },
       { id: 'disabled', name: '已禁用 (disabled)' },
@@ -119,6 +121,7 @@ export function UserList() {
 
       <List
         filters={userFilters}
+        filterDefaultValues={{ status: '__all__' }}
         actions={<UserListActions onOpenCreate={() => setCreateOpen(true)} />}
         perPage={25}
         sort={{ field: 'created_at', order: 'DESC' }}

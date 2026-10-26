@@ -37,6 +37,8 @@ const auditLogFilters = [
     label="操作动作"
     alwaysOn
     size="small"
+    emptyValue="__all__"
+    emptyText="全部"
     choices={[
       { id: 'user_create', name: '创建用户 (user_create)' },
       { id: 'user_rename', name: '修改用户名 (user_rename)' },
@@ -55,6 +57,8 @@ const auditLogFilters = [
     label="结果"
     alwaysOn
     size="small"
+    emptyValue="__all__"
+    emptyText="全部"
     choices={[
       { id: 'success', name: '成功 (success)' },
       { id: 'rejected', name: '预期拒绝 (rejected)' },
@@ -91,6 +95,7 @@ export function AuditLogList() {
       </Box>
 
       <List
+        filterDefaultValues={{ action: '__all__', result: '__all__' }}
         filters={auditLogFilters}
         perPage={25}
         sort={{ field: 'created_at', order: 'DESC' }}
