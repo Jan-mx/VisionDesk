@@ -1,3 +1,4 @@
+import { DateFilterInput } from '@/admin/components/DateFilterInput'
 import { useState } from 'react'
 import {
   Datagrid,
@@ -67,19 +68,17 @@ const auditLogFilters = [
   />,
   <TextInput key="actor_id" source="actor_id" label="操作者 UUID" size="small" />,
   <TextInput key="target_id" source="target_id" label="目标 UUID" size="small" />,
-  <TextInput
+  <DateFilterInput
     key="created_from"
     source="created_from"
     label="起始日期"
     size="small"
-    type="date"
   />,
-  <TextInput
+  <DateFilterInput
     key="created_to"
     source="created_to"
     label="截止日期"
     size="small"
-    type="date"
   />,
 ]
 

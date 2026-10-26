@@ -1,3 +1,4 @@
+import { DateFilterInput } from '@/admin/components/DateFilterInput'
 import { useState } from 'react'
 import {
   Datagrid,
@@ -52,19 +53,17 @@ const toolRunFilters = [
     choices={TOOL_OPTIONS}
   />,
   <TextInput key="user_id" source="user_id" label="用户 UUID" size="small" />,
-  <TextInput
+  <DateFilterInput
     key="created_from"
     source="created_from"
     label="起始日期"
     size="small"
-    type="date"
   />,
-  <TextInput
+  <DateFilterInput
     key="created_to"
     source="created_to"
     label="截止日期"
     size="small"
-    type="date"
   />,
 ]
 

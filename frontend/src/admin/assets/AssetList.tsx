@@ -27,6 +27,7 @@ import {
   type BatchDeleteOut,
 } from '@/admin/dataProvider'
 import { formatBytes, formatDateTime, kindDisplayName } from '@/admin/utils'
+import { DateFilterInput } from '@/admin/components/DateFilterInput'
 import { AssetBatchResultDialog } from './AssetBatchResultDialog'
 import { AssetDetailDialog } from './AssetDetailDialog'
 import { AssetRenameDialog } from './AssetRenameDialog'
@@ -83,19 +84,17 @@ const assetFilters = [
       { id: 'true', name: '仅隐藏/内部' },
     ]}
   />,
-  <TextInput
+  <DateFilterInput
     key="created_from"
     source="created_from"
     label="创建起始日期"
     size="small"
-    type="date"
   />,
-  <TextInput
+  <DateFilterInput
     key="created_to"
     source="created_to"
     label="创建截止日期"
     size="small"
-    type="date"
   />,
 ]
 

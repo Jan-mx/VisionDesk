@@ -1,3 +1,4 @@
+import { DateFilterInput } from '@/admin/components/DateFilterInput'
 import { useState } from 'react'
 import {
   Datagrid,
@@ -45,19 +46,17 @@ const userFilters = [
       { id: 'deleting', name: '删除中 (deleting)' },
     ]}
   />,
-  <TextInput
+  <DateFilterInput
     key="created_from"
     source="created_from"
     label="注册起始日期"
     size="small"
-    type="date"
   />,
-  <TextInput
+  <DateFilterInput
     key="created_to"
     source="created_to"
     label="注册截止日期"
     size="small"
-    type="date"
   />,
 ]
 
