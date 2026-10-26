@@ -435,6 +435,24 @@ async def test_admin_asset_list_q_matches_title_substring_escaping_or_full_uuid(
     assert by_uuid.status_code == 200, by_uuid.text
     assert [item["id"] for item in by_uuid.json()["items"]] == [other_user_asset]
 
+    # 用户审查反馈（2026-10-26，PRD §8.2 修订）：q 也命中归属用户名包含
+    marker_username = f"test_uname_{uuid.uuid4().hex[:10]}"
+    registered = await client.post(
+        "/api/auth/register",
+        json={"username": marker_username, "password": "pass-word-123"},
+    )
+    assert registered.status_code == 201, registered.text  # 注册即登录，client 归属切换
+    marker_asset = await upload_asset(client)
+    frag = marker_username[5:21]
+    by_owner = await admin_client.get("/api/admin/assets", params=common | {"q": frag})
+    assert by_owner.status_code == 200, by_owner.text
+    expected_owner = await _asset_ids(
+        "user_id IN (SELECT id FROM users WHERE username LIKE :pat ESCAPE '@')",
+        pat=f"%{frag}%",
+    )
+    assert [item["id"] for item in by_owner.json()["items"]] == expected_owner
+    assert marker_asset in expected_owner
+
 
 async def test_admin_asset_list_sort_whitelist_title_nulls_and_pagination(
     admin_client, client, credentials, other_credentials

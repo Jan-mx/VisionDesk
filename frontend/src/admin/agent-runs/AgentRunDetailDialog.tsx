@@ -14,7 +14,7 @@ import {
 } from '@mui/material'
 
 import { dataProvider, getAdminErrorMessage } from '@/admin/dataProvider'
-import { formatDateTime } from '@/admin/utils'
+import { formatDateTime, toolDisplayName } from '@/admin/utils'
 
 interface StepItem {
   tool: string
@@ -176,7 +176,7 @@ function AgentRunDetailDialogContent({
                       }}
                     >
                       <Typography variant="body2" sx={{ fontWeight: 600, color: '#212335' }}>
-                        步骤 {i + 1}：{st.tool}
+                        步骤 {i + 1}：{toolDisplayName(st.tool)}
                       </Typography>
                       <Chip
                         size="small"

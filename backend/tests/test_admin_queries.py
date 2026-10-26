@@ -538,6 +538,54 @@ _PROBE_IDS = [
 # ===========================================================================
 
 
+async def test_tool_run_list_q_matches_username_or_full_uuid(
+    admin_client, client, second_client, credentials, other_credentials, third_credentials
+):
+    """tool-runs q：归属用户名包含或完整 UUID（run_id/user_id/session_id 任一相等）。
+    用户审查反馈（2026-10-26，PRD §8.2 修订，ADM-FR-021）。"""
+    await _make_admin(admin_client, credentials)
+    a_id, a_session = await _register_with_session(client, other_credentials)
+    b_id, _ = await _register_with_session(second_client, third_credentials)
+    a_run = await _insert_tool_run(a_id, status="succeeded", session_id=a_session)
+    b_run = await _insert_tool_run(b_id, status="succeeded")
+
+    # 用户名片段：仅命中该用户
+    frag = other_credentials["username"][5:21]
+    by_user = await admin_client.get(
+        "/api/admin/tool-runs", params={"q": frag, "page_size": 100}
+    )
+    assert by_user.status_code == 200, by_user.text
+    expected = await _ordered_ids(
+        "tool_runs",
+        "desc",
+        "user_id IN (SELECT id FROM users WHERE username LIKE :pat ESCAPE '@')",
+        pat=f"%{frag}%",
+    )
+    assert [item["id"] for item in by_user.json()["items"]] == expected
+    assert a_run in expected and b_run not in expected
+
+    # 完整 UUID：run_id 精确命中；session_id 命中该会话全部 run
+    by_run = await admin_client.get(
+        "/api/admin/tool-runs", params={"q": a_run, "page_size": 100}
+    )
+    assert by_run.status_code == 200, by_run.text
+    assert [item["id"] for item in by_run.json()["items"]] == [a_run]
+
+    by_session = await admin_client.get(
+        "/api/admin/tool-runs", params={"q": a_session, "page_size": 100}
+    )
+    assert by_session.status_code == 200, by_session.text
+    session_ids = [item["id"] for item in by_session.json()["items"]]
+    assert a_run in session_ids and b_run not in session_ids
+
+    # 不匹配：空列表与真实 total
+    by_none = await admin_client.get(
+        "/api/admin/tool-runs", params={"q": "绝不存在的用户片段zz", "page_size": 100}
+    )
+    assert by_none.status_code == 200, by_none.text
+    assert by_none.json()["items"] == []
+
+
 async def test_tool_run_list_filters_pagination_sort_and_independence(
     admin_client, client, second_client, credentials, other_credentials, third_credentials
 ):

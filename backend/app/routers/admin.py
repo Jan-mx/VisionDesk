@@ -35,7 +35,7 @@ from datetime import datetime
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response, status
-from sqlalchemy import ColumnElement, Select, func, select, tuple_
+from sqlalchemy import ColumnElement, Select, func, or_, select, tuple_
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
@@ -726,14 +726,19 @@ def _asset_conflict(code: str, message: str, references: list | None = None) -> 
 
 
 def _asset_q_criterion(needle: str) -> ColumnElement[bool] | None:
-    """q 命中规则（PRD §8.2）：title 包含（通配符转义防注入）或完整素材 UUID。"""
+    """q 命中规则（PRD §8.2，2026-10-26 审查修订）：title 或归属用户名包含
+    （通配符转义防注入）或完整素材 UUID。"""
     if not needle:
         return None
     try:
         return Asset.id == uuid.UUID(needle)
     except ValueError:
         pattern = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        return Asset.title.like(f"%{pattern}%", escape="\\")
+        like = f"%{pattern}%"
+        return or_(
+            Asset.title.like(like, escape="\\"),
+            User.username.like(like, escape="\\"),
+        )
 
 
 def _reference_rows(
@@ -1178,6 +1183,23 @@ _TOOL_RUN_SORT_COLUMNS = {
     "status": ToolRun.status,
     "tool": ToolRun.tool,
 }
+
+
+def _tool_run_q_criterion(needle: str) -> ColumnElement[bool] | None:
+    """q 命中规则（PRD §8.2，2026-10-26 审查修订）：归属用户名包含或完整 UUID
+    （run_id / user_id / session_id 任一相等）。"""
+    if not needle:
+        return None
+    try:
+        target = uuid.UUID(needle)
+    except ValueError:
+        pattern = needle.replace("\\", "\\\\").replace("%", "\%").replace("_", "\_")
+        return User.username.like(f"%{pattern}%", escape="\\")
+    return or_(
+        ToolRun.id == target,
+        ToolRun.user_id == target,
+        ToolRun.session_id == target,
+    )
 _AGENT_RUN_SORT_COLUMNS = {
     "created_at": AgentRun.created_at,
     "status": AgentRun.status,
@@ -1406,6 +1428,10 @@ async def list_tool_runs(
     （id 同方向稳定）。直接 select——绝不经过 runs.get 的失联过期路径；
     读取零审计；params/result 原始 JSON 不透传。"""
     stmt = select(ToolRun, User.username).join(User, User.id == ToolRun.user_id)
+    if params.q is not None:
+        criterion = _tool_run_q_criterion(params.q.strip())
+        if criterion is not None:
+            stmt = stmt.where(criterion)
     if params.user_id is not None:
         stmt = stmt.where(ToolRun.user_id == params.user_id)
     if params.status is not None:

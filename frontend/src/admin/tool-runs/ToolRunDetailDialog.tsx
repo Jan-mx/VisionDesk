@@ -14,7 +14,7 @@ import {
 } from '@mui/material'
 
 import { dataProvider, getAdminErrorMessage } from '@/admin/dataProvider'
-import { formatDateTime, formatDuration } from '@/admin/utils'
+import { formatDateTime, formatDuration, toolDisplayName } from '@/admin/utils'
 
 interface ArtifactItem {
   asset_id: string
@@ -87,7 +87,7 @@ function ToolRunDetailDialogContent({
   return (
     <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
       <DialogTitle sx={{ fontWeight: 700, pb: 1 }}>
-        工具任务详情：{detail?.tool || '...'}
+        工具任务详情：{toolDisplayName(detail?.tool) || '...'}
       </DialogTitle>
 
       <DialogContent dividers>
@@ -110,7 +110,7 @@ function ToolRunDetailDialogContent({
           <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
               <Typography variant="subtitle1" sx={{ fontWeight: 700, color: '#212335' }}>
-                工具：{detail.tool}
+                工具：{toolDisplayName(detail.tool)}
               </Typography>
               <Chip
                 size="small"

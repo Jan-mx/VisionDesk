@@ -100,7 +100,7 @@ const RESOURCE_SORT_WHITELIST: Record<string, string[]> = {
 const RESOURCE_FILTER_WHITELIST: Record<string, string[]> = {
   users: ['q', 'status', 'created_from', 'created_to'],
   assets: ['user_id', 'q', 'kind', 'source', 'library_hidden', 'created_from', 'created_to'],
-  'tool-runs': ['user_id', 'status', 'tool', 'created_from', 'created_to'],
+  'tool-runs': ['q', 'user_id', 'status', 'tool', 'created_from', 'created_to'],
   'agent-runs': ['user_id', 'status', 'session_id', 'created_from', 'created_to'],
   'audit-logs': ['actor_id', 'target_id', 'action', 'result', 'created_from', 'created_to'],
 }
@@ -146,7 +146,8 @@ function buildQueryParams(
   const filterObj = params.filter || {}
   for (const key of allowedFilters) {
     const raw = filterObj[key]
-    if (raw === undefined || raw === null || raw === '') continue
+    // 「全部」哨兵值：与空值同义，不发送该筛选参数
+    if (raw === undefined || raw === null || raw === '' || raw === '__all__') continue
 
     if (key === 'created_from' || key === 'created_to') {
       const iso = normalizeIsoTime(raw)

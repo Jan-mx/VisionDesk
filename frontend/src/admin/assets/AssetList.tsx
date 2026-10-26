@@ -26,13 +26,19 @@ import {
   getAdminErrorMessage,
   type BatchDeleteOut,
 } from '@/admin/dataProvider'
-import { formatBytes, formatDateTime } from '@/admin/utils'
+import { formatBytes, formatDateTime, kindDisplayName } from '@/admin/utils'
 import { AssetBatchResultDialog } from './AssetBatchResultDialog'
 import { AssetDetailDialog } from './AssetDetailDialog'
 import { AssetRenameDialog } from './AssetRenameDialog'
 
 const assetFilters = [
-  <TextInput key="q" source="q" label="搜索（标题或 UUID）" alwaysOn size="small" />,
+  <TextInput
+    key="q"
+    source="q"
+    label="搜索（标题、用户名或 UUID）"
+    alwaysOn
+    size="small"
+  />,
   <SelectInput
     key="kind"
     source="kind"
@@ -40,15 +46,15 @@ const assetFilters = [
     alwaysOn
     size="small"
     choices={[
-      { id: 'upload', name: '用户上传 (upload)' },
+      { id: '__all__', name: '全部' },
+      { id: 'original', name: '用户原图 (original)' },
       { id: 'generated', name: 'AI 生成 (generated)' },
-      { id: 'mask', name: '涂抹遮罩 (mask)' },
       { id: 'subject', name: '主体抠图 (subject)' },
       { id: 'background', name: '背景元素 (background)' },
-      { id: 'layer', name: '图层素材 (layer)' },
+      { id: 'mask', name: '涂抹遮罩 (mask)' },
       { id: 'snapshot', name: '快照存档 (snapshot)' },
+      { id: 'marketing', name: '营销图 (marketing)' },
       { id: 'export', name: '导出产物 (export)' },
-      { id: 'wall', name: '画布整墙 (wall)' },
     ]}
   />,
   <SelectInput
@@ -57,10 +63,10 @@ const assetFilters = [
     label="素材来源"
     size="small"
     choices={[
+      { id: '__all__', name: '全部' },
       { id: 'upload', name: '上传 (upload)' },
-      { id: 'generate', name: '生图 (generate)' },
-      { id: 'edit', name: '编辑 (edit)' },
-      { id: 'batch', name: '批量 (batch)' },
+      { id: 'generate', name: '生成 (generate)' },
+      { id: 'tool', name: '工具处理 (tool)' },
     ]}
   />,
   <SelectInput
@@ -69,6 +75,7 @@ const assetFilters = [
     label="隐藏状态"
     size="small"
     choices={[
+      { id: '__all__', name: '全部' },
       { id: 'false', name: '创意库公开' },
       { id: 'true', name: '仅隐藏/内部' },
     ]}
@@ -182,6 +189,7 @@ export function AssetList() {
 
       <List
         filters={assetFilters}
+        filterDefaultValues={{ kind: '__all__', source: '__all__', library_hidden: '__all__' }}
         perPage={25}
         sort={{ field: 'created_at', order: 'DESC' }}
         sx={{
@@ -285,7 +293,7 @@ export function AssetList() {
               <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
                 <Chip
                   size="small"
-                  label={record.kind}
+                  label={kindDisplayName(record.kind)}
                   sx={{ fontSize: '11px', fontWeight: 600, height: 20 }}
                 />
                 <Typography variant="caption" sx={{ fontSize: '10px', color: '#8d90a2' }}>

@@ -26,6 +26,7 @@ const agentRunFilters = [
     alwaysOn
     size="small"
     choices={[
+      { id: '__all__', name: '全部' },
       { id: 'queued', name: '排队中 (queued)' },
       { id: 'running', name: '执行中 (running)' },
       { id: 'succeeded', name: '成功 (succeeded)' },
@@ -64,6 +65,7 @@ export function AgentRunList() {
 
       <List
         filters={agentRunFilters}
+        filterDefaultValues={{ status: '__all__' }}
         perPage={25}
         sort={{ field: 'created_at', order: 'DESC' }}
         sx={{

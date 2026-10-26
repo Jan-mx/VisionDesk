@@ -324,6 +324,7 @@ class AdminToolRunListParams(PageParams):
     user_id: uuid.UUID | None = None
     status: RunStatus | None = None
     tool: Annotated[str | None, Field(max_length=48)] = None
+    q: Annotated[str | None, Field(max_length=100)] = None
     created_from: AwareDatetime | None = None
     created_to: AwareDatetime | None = None
 

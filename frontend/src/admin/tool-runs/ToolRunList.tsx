@@ -4,7 +4,6 @@ import {
   FunctionField,
   List,
   SelectInput,
-  TextField,
   TextInput,
   type RaRecord,
 } from 'react-admin'
@@ -16,11 +15,17 @@ import {
   Typography,
 } from '@mui/material'
 
-import { formatDateTime, formatDuration } from '@/admin/utils'
+import { formatDateTime, formatDuration, toolDisplayName, TOOL_OPTIONS } from '@/admin/utils'
 import { ToolRunDetailDialog } from './ToolRunDetailDialog'
 
 const toolRunFilters = [
-  <TextInput key="tool" source="tool" label="按工具过滤" alwaysOn size="small" />,
+  <TextInput
+    key="q"
+    source="q"
+    label="搜索（用户名或 UUID）"
+    alwaysOn
+    size="small"
+  />,
   <SelectInput
     key="status"
     source="status"
@@ -28,12 +33,20 @@ const toolRunFilters = [
     alwaysOn
     size="small"
     choices={[
+      { id: '__all__', name: '全部' },
       { id: 'queued', name: '排队中 (queued)' },
       { id: 'running', name: '执行中 (running)' },
       { id: 'succeeded', name: '成功 (succeeded)' },
       { id: 'failed', name: '失败 (failed)' },
       { id: 'canceled', name: '已取消 (canceled)' },
     ]}
+  />,
+  <SelectInput
+    key="tool"
+    source="tool"
+    label="工具"
+    size="small"
+    choices={[{ id: '__all__', name: '全部' }, ...TOOL_OPTIONS]}
   />,
   <TextInput key="user_id" source="user_id" label="用户 UUID" size="small" />,
   <TextInput
@@ -65,6 +78,7 @@ export function ToolRunList() {
 
       <List
         filters={toolRunFilters}
+        filterDefaultValues={{ status: '__all__', tool: '__all__' }}
         perPage={25}
         sort={{ field: 'created_at', order: 'DESC' }}
         sx={{
@@ -86,7 +100,16 @@ export function ToolRunList() {
             },
           }}
         >
-          <TextField source="tool" label="工具" sx={{ fontWeight: 600 }} />
+          <FunctionField
+            label="工具"
+            render={(record: RaRecord) => (
+              <Tooltip title={record.tool} placement="top">
+                <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '12.5px' }}>
+                  {toolDisplayName(record.tool)}
+                </Typography>
+              </Tooltip>
+            )}
+          />
 
           <FunctionField
             label="状态"
