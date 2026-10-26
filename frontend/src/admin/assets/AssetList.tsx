@@ -86,16 +86,16 @@ const assetFilters = [
   <TextInput
     key="created_from"
     source="created_from"
-    label="创建起始时间 (ISO)"
+    label="创建起始日期"
     size="small"
-    placeholder="如 2026-10-01T00:00:00Z"
+    type="date"
   />,
   <TextInput
     key="created_to"
     source="created_to"
-    label="创建截止时间 (ISO)"
+    label="创建截止日期"
     size="small"
-    placeholder="如 2026-10-31T23:59:59Z"
+    type="date"
   />,
 ]
 

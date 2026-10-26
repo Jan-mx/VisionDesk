@@ -105,17 +105,21 @@ const RESOURCE_FILTER_WHITELIST: Record<string, string[]> = {
   'audit-logs': ['actor_id', 'target_id', 'action', 'result', 'created_from', 'created_to'],
 }
 
-function normalizeIsoTime(val: unknown): string | undefined {
+function normalizeIsoTime(val: unknown, key: string): string | undefined {
   if (!val) return undefined
   if (typeof val === 'string' && val.trim()) {
-    try {
-      const d = new Date(val)
-      if (!isNaN(d.getTime())) {
-        return d.toISOString()
-      }
-    } catch {
-      return undefined
+    const v = val.trim()
+    // 原生日期选择器（type="date"）的纯日期值：按本地时区取当天零点；
+    // 截止日期进一天（后端区间上界不含，等效「含所选当天全天」）。
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+      const base = new Date(v + 'T00:00:00')
+      if (isNaN(base.getTime())) return undefined
+      if (key === 'created_to') base.setDate(base.getDate() + 1)
+      return base.toISOString()
     }
+    const d = new Date(v)
+    if (!isNaN(d.getTime())) return d.toISOString()
+    return undefined
   }
   return undefined
 }
@@ -150,7 +154,7 @@ function buildQueryParams(
     if (raw === undefined || raw === null || raw === '' || raw === '__all__') continue
 
     if (key === 'created_from' || key === 'created_to') {
-      const iso = normalizeIsoTime(raw)
+      const iso = normalizeIsoTime(raw, key)
       if (iso) query.set(key, iso)
     } else if (key === 'library_hidden') {
       if (raw === true || raw === 'true') query.set(key, 'true')
