@@ -15,7 +15,7 @@ def _start_session(response: Response, user: User) -> UserOut:
     settings = get_settings()
     response.set_cookie(
         SESSION_COOKIE,
-        issue_token(user.id),
+        issue_token(user.id, user.token_version),
         max_age=settings.jwt_ttl_hours * 3600,
         httponly=True,
         samesite="lax",

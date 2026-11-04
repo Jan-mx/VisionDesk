@@ -4,7 +4,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import ToastHost from '@/components/ToastHost'
 import { useAuthActions, useCurrentUser } from '@/hooks/useAuth'
 
-const NAV_ITEMS = [
+const BASE_NAV_ITEMS = [
   { to: '/create', label: '创作', path: 'm12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3ZM20 2v4m-2-2h4' },
   { to: '/editor', label: '编辑', path: 'm14 5 5 5M4 20l5-1L21 7l-5-5L4 14v6Z' },
   { to: '/marketing', label: '物料', path: 'M5 3h14v18H5zM8 7h8M8 11h5m-5 4h8m-8 3h5' },
@@ -15,6 +15,12 @@ const NAV_ITEMS = [
     path: 'M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z',
   },
 ]
+
+const ADMIN_NAV_ITEM = {
+  to: '/admin',
+  label: '后台',
+  path: 'M12 2 4 5v6.09c0 5.05 3.41 9.76 8 10.91 4.59-1.15 8-5.86 8-10.91V5l-8-3Zm0 3.3 5.5 2.06v4.73c0 3.65-2.34 7.18-5.5 8.35-3.16-1.17-5.5-4.7-5.5-8.35V7.36L12 5.3Z',
+}
 
 const TITLES: Record<string, string> = {
   create: '开始创作',
@@ -42,13 +48,16 @@ export default function WorkbenchLayout() {
   const currentSection = location.pathname.split('/')[1] || 'create'
   const currentTitle = TITLES[currentSection] || '工作台'
 
+  const navItems = user?.role === 'admin' ? [...BASE_NAV_ITEMS, ADMIN_NAV_ITEM] : BASE_NAV_ITEMS
+
   // 计算当前激活项在侧边栏的索引，驱动弹性物理胶囊滑动
-  const activeIndex = NAV_ITEMS.findIndex((item) => {
+  const activeIndex = navItems.findIndex((item) => {
     if (item.to === '/editor') return location.pathname.startsWith('/editor')
     if (item.to === '/batch') {
       return location.pathname.startsWith('/batch') || location.pathname.startsWith('/candidates')
     }
     if (item.to === '/marketing') return location.pathname.startsWith('/marketing')
+    if (item.to === '/admin') return location.pathname.startsWith('/admin')
     return location.pathname.startsWith(item.to)
   })
 
@@ -89,7 +98,7 @@ export default function WorkbenchLayout() {
             />
           )}
 
-          {NAV_ITEMS.map((item) => (
+          {navItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}

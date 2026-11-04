@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     # auto：有 rapidocr 则识别文字层；none 跳过；测试强制 none
     ocr_provider: str = "auto"
 
+    # 账号永久清理开关（FR-027）：默认关闭；关闭时 deletion-preview 与 DELETE 均
+    # 503 deletion_unavailable、零写入零审计，重试与操作详情不受开关限制
+    admin_account_deletion_enabled: bool = False
+
     @property
     def is_production(self) -> bool:
         return self.app_env == "production"

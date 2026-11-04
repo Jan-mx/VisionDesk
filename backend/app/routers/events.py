@@ -5,11 +5,15 @@ from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import events
 from app.db import SessionDep
 from app.deps import CurrentUser
+from app.models import User
 from app.models.tool_run import RunStatus
+from app.models.user import UserStatus
 from app.services import runs
 from app.services.runs import RunNotFound
 
@@ -25,8 +29,24 @@ def _frame(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+async def _session_valid(session: AsyncSession, user_id: uuid.UUID, expected_ver: int) -> bool:
+    """逐 tick 轻查询用户状态与会话版本，禁用或版本递增后旧流立即失去续期资格。"""
+    row = (
+        await session.execute(
+            select(User.status, User.token_version).where(User.id == user_id)
+        )
+    ).first()
+    return (
+        row is not None
+        and row.status == UserStatus.ACTIVE
+        and row.token_version == expected_ver
+    )
+
+
 @router.get("/runs/{run_id}")
 async def stream_run(run_id: uuid.UUID, user: CurrentUser, session: SessionDep) -> Response:
+    # 入口鉴权通过时钉住版本基准；流内只复核，不再签发新版本
+    expected_ver = user.token_version
     try:
         await runs.get(session, run_id, user.id)
     except RunNotFound as exc:
@@ -42,6 +62,10 @@ async def stream_run(run_id: uuid.UUID, user: CurrentUser, session: SessionDep) 
 
             deadline = asyncio.get_running_loop().time() + _MAX_STREAM_SECONDS
             async for payload in messages:
+                # 每次唤醒（事件或 ≤15s 空闲 tick）复核会话，失效即 return 断流
+                # （PRD §6.2：下一次事件/保活检查时终止，最长 15 秒）
+                if not await _session_valid(session, user.id, expected_ver):
+                    return
                 if payload is None:
                     if asyncio.get_running_loop().time() > deadline:
                         return

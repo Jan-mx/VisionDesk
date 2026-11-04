@@ -1,5 +1,6 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 
+import { AdminGuard } from '@/admin/AdminGuard'
 import RequireAuth from '@/layouts/RequireAuth'
 import WorkbenchLayout from '@/layouts/WorkbenchLayout'
 import AuthPage from '@/pages/AuthPage'
@@ -30,6 +31,8 @@ export default function App() {
             <Route path="/batch/:runId" element={<BatchPage />} />
             <Route path="/candidates/:runId" element={<CandidatesPage />} />
           </Route>
+
+          <Route path="/admin/*" element={<AdminGuard />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />
