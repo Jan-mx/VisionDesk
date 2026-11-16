@@ -15,8 +15,8 @@ import { useEditorUi } from '@/stores/editorUi'
 import { toast } from '@/stores/toasts'
 
 export default function SessionSidebar({ activeId }: { activeId: string }) {
-  // 历史对话默认收起，尽量把纵向空间留给当前对话
-  const [historyOpen, setHistoryOpen] = useState(false)
+  // 历史对话默认展开，方便直接切换会话；点「历史」可手动收起
+  const [historyOpen, setHistoryOpen] = useState(true)
 
   return (
     <aside className="border-line bg-paper flex w-[284px] shrink-0 flex-col border-r">
