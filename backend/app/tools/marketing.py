@@ -22,6 +22,12 @@ class MarketingKind(enum.StrEnum):
     POSTER = "poster"
 
 
+class PlatformStyle(enum.StrEnum):
+    XIAOHONGSHU = "xiaohongshu"
+    DOUYIN = "douyin"
+    TMALL = "tmall"
+
+
 _PROMPTS = {
     MarketingKind.PRODUCT: (
         "把商品放在纯白背景上，居中构图，柔和顶光，边缘干净，"
@@ -41,13 +47,49 @@ _PROMPTS = {
 }
 
 
+_PLATFORM_PROMPTS = {
+    PlatformStyle.XIAOHONGSHU: (
+        "整体呈现小红书风格：明亮通透，清新精致的生活分享调性，"
+        "柔和自然光，浅色背景适当留白，保留商品原有材质与颜色。"
+    ),
+    PlatformStyle.DOUYIN: (
+        "整体呈现抖音风格：高饱和高对比，视觉冲击力强，潮流感构图，"
+        "保留商品原有材质与颜色。"
+    ),
+    PlatformStyle.TMALL: (
+        "整体呈现天猫京东大促风格：电商促销氛围，预留价格与卖点文字区，"
+        "带有节日装饰感，保留商品原有材质与颜色。"
+    ),
+}
+
+# 平台风格联动出图比例：小红书 4:5、抖音 9:16、天猫京东 1:1
+_PLATFORM_RATIOS = {
+    PlatformStyle.XIAOHONGSHU: Ratio.PORTRAIT_4_5,
+    PlatformStyle.DOUYIN: Ratio.VERTICAL_9_16,
+    PlatformStyle.TMALL: Ratio.SQUARE,
+}
+
+
 class GenerateMarketingIn(BaseModel):
     kind: MarketingKind = Field(
         description="product 商品主图、scene 场景氛围图、model 模特上身、poster 促销海报"
     )
     caption: str | None = Field(default=None, max_length=200, description="海报文案或补充要求")
     count: int = Field(default=1, ge=1, le=4)
-    ratio: Ratio = Field(default=Ratio.SQUARE, description="输出比例，默认 1:1")
+    platform: PlatformStyle | None = Field(
+        default=None,
+        description=(
+            "平台风格：xiaohongshu 小红书风、douyin 抖音风、tmall 天猫京东大促风。"
+            "用户点名平台风格时填写，比例自动跟随平台"
+        ),
+    )
+    ratio: Ratio | None = Field(
+        default=None,
+        description=(
+            "输出比例；缺省跟随平台风格（小红书 4:5、抖音 9:16、天猫京东 1:1），"
+            "未选平台时 1:1"
+        ),
+    )
     from_previous: bool = Field(
         default=False,
         description="输入取上一步的产物而不是当前画布（如刚生成的海报）",
@@ -101,8 +143,13 @@ async def _progress(session: AsyncSession, run: ToolRun, progress: int, stage: s
     await runs.report(session, run, progress, stage)
 
 
-def _prompt_of(kind: MarketingKind, caption: str | None) -> str:
-    text = _PROMPTS[kind]
+def _prompt_of(
+    kind: MarketingKind, caption: str | None, platform: PlatformStyle | None = None
+) -> str:
+    parts = [_PROMPTS[kind]]
+    if platform is not None:
+        parts.append(_PLATFORM_PROMPTS[platform])
+    text = " ".join(parts)
     extra = (caption or "").strip()
     return f"{text} 文案：{extra}" if extra else text
 
@@ -129,14 +176,18 @@ async def _step_source(session: AsyncSession, run: ToolRun, record) -> bytes:
 async def generate_marketing_exec(session: AsyncSession, run: ToolRun) -> dict:
     record = await require_session(session, run)
     kind = MarketingKind(run.params["kind"])
-    ratio = Ratio(run.params["ratio"])
+    raw_platform = run.params.get("platform")
+    platform = PlatformStyle(raw_platform) if raw_platform else None
+    raw_ratio = run.params.get("ratio")
+    # 比例优先级：显式 ratio > 平台联动 > 1:1
+    ratio = Ratio(raw_ratio) if raw_ratio else _PLATFORM_RATIOS.get(platform, Ratio.SQUARE)
     width, height = size_of(ratio)
     await runs.report(session, run, 15, "读取画布")
     source = await _step_source(session, run, record)
     await runs.report(session, run, 30, "生成营销图")
     images = await get_image_provider().edit(
         EditRequest(
-            prompt=_prompt_of(kind, run.params.get("caption")),
+            prompt=_prompt_of(kind, run.params.get("caption"), platform),
             image=source,
             count=run.params["count"],
             width=width,
@@ -146,13 +197,15 @@ async def generate_marketing_exec(session: AsyncSession, run: ToolRun) -> dict:
     )
     fitted = [resize_to(data, width, height) for data in images]
     await runs.report(session, run, 95, "营销图已加入图片墙")
+    variant = {"kind": kind.value, "ratio": ratio.value, "width": width, "height": height}
+    if platform is not None:
+        variant["platform"] = platform.value
     return await _store(
         session,
         run,
         fitted,
         kind=AssetKind.MARKETING,
-        variants=[{"kind": kind.value, "ratio": ratio.value, "width": width, "height": height}]
-        * len(fitted),
+        variants=[variant] * len(fitted),
     )
 
 
@@ -180,6 +233,8 @@ GENERATE_MARKETING = ToolSpec(
         "按当前画布生成电商营销图，只进图片墙，不改当前画布。"
         "kind：product 商品主图（白底）、scene 场景氛围图、"
         "model 模特上身、poster 促销海报。caption 可填海报标题或补充要求。"
+        "用户点名平台风格（小红书风、抖音风、天猫京东大促风）时填 platform："
+        "xiaohongshu / douyin / tmall，出图比例自动跟随平台，无需另填 ratio。"
         "用户说对刚生成的某张图（如上一张海报）继续处理时，加 from_previous=true。"
     ),
     params=GenerateMarketingIn,

@@ -14,6 +14,20 @@ export const MARKETING_KINDS: {
   { id: 'poster', label: '促销海报', hint: '突出商品，预留文案区' },
 ]
 
+// 平台风格预设，出图比例由后端联动（WI-20261116-01）
+export type PlatformStyle = 'xiaohongshu' | 'douyin' | 'tmall'
+
+export const PLATFORM_STYLES: {
+  id: PlatformStyle
+  label: string
+  hint: string
+  ratio: Ratio
+}[] = [
+  { id: 'xiaohongshu', label: '小红书', hint: '清新通透 · 4:5', ratio: '4:5' },
+  { id: 'douyin', label: '抖音', hint: '高饱和冲击 · 9:16', ratio: '9:16' },
+  { id: 'tmall', label: '天猫/京东', hint: '大促氛围 · 1:1', ratio: '1:1' },
+]
+
 export const DELIVERY_RATIOS: { value: Ratio; label: string; size: string }[] = [
   { value: '1:1', label: '1:1', size: '1080×1080' },
   { value: '4:5', label: '4:5', size: '1080×1350' },

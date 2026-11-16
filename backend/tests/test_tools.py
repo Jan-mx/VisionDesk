@@ -783,3 +783,68 @@ async def test_prepare_delivery_sizes_covers_three_ratios(signed_in: httpx.Async
     assert updated["current_asset_id"] == session["current_asset_id"]
     assert updated["revision"] == 1
     assert sizes == {(1080, 1080), (1080, 1350), (1080, 1920)}
+
+
+@pytest.mark.parametrize(
+    ("platform", "keyword", "size"),
+    [
+        ("xiaohongshu", "小红书", (1080, 1350)),
+        ("douyin", "抖音", (1080, 1920)),
+        ("tmall", "大促", (1080, 1080)),
+    ],
+)
+async def test_generate_marketing_platform_styles_combine_prompt_and_ratio(
+    signed_in: httpx.AsyncClient, edit_requests, platform: str, keyword: str, size: tuple[int, int]
+):
+    session = await open_session(signed_in)
+    updated = await apply(
+        signed_in, session["id"], "generate_marketing", {"kind": "product", "platform": platform}
+    )
+    marketing = [asset for asset in updated["assets"] if asset["kind"] == "marketing"]
+
+    assert updated["current_asset_id"] == session["current_asset_id"]
+    assert (marketing[0]["width"], marketing[0]["height"]) == size
+    request = edit_requests[-1]
+    assert keyword in request.prompt
+    assert "纯白背景" in request.prompt  # kind 句保留
+
+
+async def test_generate_marketing_platform_with_caption_order(
+    signed_in: httpx.AsyncClient, edit_requests
+):
+    session = await open_session(signed_in)
+    await apply(
+        signed_in,
+        session["id"],
+        "generate_marketing",
+        {"kind": "poster", "platform": "douyin", "caption": "新品上市"},
+    )
+
+    prompt = edit_requests[-1].prompt
+    assert prompt.index("促销海报") < prompt.index("抖音") < prompt.index("文案：新品上市")
+
+
+async def test_generate_marketing_ratio_precedence(signed_in: httpx.AsyncClient):
+    session = await open_session(signed_in)
+    plain = await apply(signed_in, session["id"], "generate_marketing", {"kind": "scene"})
+    overridden = await apply(
+        signed_in,
+        session["id"],
+        "generate_marketing",
+        {"kind": "scene", "platform": "douyin", "ratio": "4:5"},
+    )
+    marketing = [asset for asset in plain["assets"] if asset["kind"] == "marketing"]
+    explicit = [asset for asset in overridden["assets"] if asset["kind"] == "marketing"]
+
+    assert (marketing[0]["width"], marketing[0]["height"]) == (1080, 1080)
+    assert (explicit[-1]["width"], explicit[-1]["height"]) == (1080, 1350)
+
+
+async def test_generate_marketing_rejects_unknown_platform(signed_in: httpx.AsyncClient):
+    session = await open_session(signed_in)
+    response = await signed_in.post(
+        f"/api/sessions/{session['id']}/tools",
+        json={"tool": "generate_marketing", "params": {"kind": "poster", "platform": "weibo"}},
+    )
+
+    assert response.status_code == 422

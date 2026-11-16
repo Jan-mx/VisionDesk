@@ -97,6 +97,17 @@ async def test_marketing_tool_is_planned_and_dispatched(signed_in: httpx.AsyncCl
     assert "营销图" in turn["reply"]
 
 
+async def test_marketing_platform_param_dispatches(signed_in: httpx.AsyncClient, fake_planner):
+    fake_planner(tool_call("generate_marketing", {"kind": "scene", "platform": "xiaohongshu"}))
+    session_id = (await open_session(signed_in))["id"]
+
+    turn = await send(signed_in, session_id, "出一张小红书风格的场景图")
+
+    assert turn["status"] == "running"
+    assert [step["tool"] for step in turn["steps"]] == ["generate_marketing"]
+    assert turn["steps"][0]["label"] == "营销图"
+
+
 async def test_plain_answer_dispatches_nothing(signed_in: httpx.AsyncClient, fake_planner):
     fake_planner(AIMessage(content="现有工具做不到这个。"))
     session_id = (await open_session(signed_in))["id"]

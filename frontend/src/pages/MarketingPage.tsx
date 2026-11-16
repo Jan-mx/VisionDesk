@@ -11,9 +11,11 @@ import {
   DELIVERY_RATIOS,
   KIND_LABELS,
   MARKETING_KINDS,
+  PLATFORM_STYLES,
   defaultSelected,
   packable,
   type MarketingKind,
+  type PlatformStyle,
 } from '@/lib/marketing'
 import { toast } from '@/stores/toasts'
 
@@ -85,6 +87,8 @@ function Workspace({ sessionId }: { sessionId: string }) {
 
   // 1. 进入会话：类型草稿默认 poster，待生成尺寸草稿默认 1:1/4:5/9:16（严格对齐 §8.2）
   const [selectedKind, setSelectedKind] = useState<MarketingKind>('poster')
+  // 平台风格默认不选（不限），风格区始终显示（WI-20261116-01）
+  const [platform, setPlatform] = useState<PlatformStyle | null>(null)
   const [copy, setCopy] = useState('')
   const [draftRatios, setDraftRatios] = useState<string[]>(['1:1', '4:5', '9:16'])
   const [picked, setPicked] = useState<string[] | null>(null)
@@ -145,11 +149,12 @@ function Workspace({ sessionId }: { sessionId: string }) {
     }
   }
 
-  // 点击明确生成营销物料（严格对齐 §8.2）
+  // 点击明确生成营销物料（严格对齐 §8.2；平台风格联动比例由后端处理）
   const generateMarketing = () => {
     if (tools.busy) return
     tools.invoke('generate_marketing', {
       kind: selectedKind,
+      platform: platform ?? undefined,
       caption: copy.trim() || undefined,
     })
   }
@@ -247,6 +252,47 @@ function Workspace({ sessionId }: { sessionId: string }) {
                   </button>
                 )
               })}
+            </div>
+
+            {/* 平台风格：始终显示；选中后出图比例自动跟随平台 */}
+            <div className="mt-3.5">
+              <label className="text-muted block text-[11.5px] font-medium mb-1">
+                平台风格 <span className="text-faint">/ 可选，出图比例跟随平台</span>
+              </label>
+              <div className="grid grid-cols-4 gap-2">
+                <button
+                  type="button"
+                  disabled={tools.busy}
+                  onClick={() => setPlatform(null)}
+                  className={`rounded-control border p-2.5 text-center transition-all ${
+                    platform === null
+                      ? 'border-brand bg-brand-soft ring-1 ring-brand/10'
+                      : 'border-line bg-paper hover:border-line-strong'
+                  }`}
+                >
+                  <strong className="text-ink block text-xs font-semibold">不限</strong>
+                  <span className="text-muted block text-[10px] mt-0.5">默认 1:1</span>
+                </button>
+                {PLATFORM_STYLES.map((style) => {
+                  const active = platform === style.id
+                  return (
+                    <button
+                      key={style.id}
+                      type="button"
+                      disabled={tools.busy}
+                      onClick={() => setPlatform(style.id)}
+                      className={`rounded-control border p-2.5 text-center transition-all ${
+                        active
+                          ? 'border-brand bg-brand-soft ring-1 ring-brand/10'
+                          : 'border-line bg-paper hover:border-line-strong'
+                      }`}
+                    >
+                      <strong className="text-ink block text-xs font-semibold">{style.label}</strong>
+                      <span className="text-muted block text-[10px] mt-0.5">{style.hint}</span>
+                    </button>
+                  )
+                })}
+              </div>
             </div>
 
             <div className="mt-3.5">

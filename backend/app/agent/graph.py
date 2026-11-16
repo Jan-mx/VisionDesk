@@ -50,6 +50,8 @@ _SYSTEM = """你是电商图片修图助手，通过调用工具完成用户的�
 - 改文字图层的文案、字号或颜色用 set_layer_text，并点名图层。
 - 出营销图、主图、场景图、模特图、海报用 generate_marketing，
   kind 分别为 product / scene / model / poster。结果只进图片墙。
+  用户点名平台风格（小红书风、抖音风、天猫京东大促风）时加 platform
+  （xiaohongshu / douyin / tmall），比例自动跟随平台。
 - 改尺寸、出投放物料、出 1:1 / 4:5 / 9:16 用 prepare_delivery_sizes，
   不要裁切主体，也不要用 crop_canvas。
 - 对多张图做同一套去背景、换背景、调色、超分、扩图或改尺寸时用 batch_process。
